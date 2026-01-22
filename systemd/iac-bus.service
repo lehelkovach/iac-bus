@@ -1,0 +1,18 @@
+[Unit]
+Description=Inter-Agent Communication Bus
+Documentation=https://github.com/lehelkovach/iac-bus
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/iac-bus
+ExecStart=/opt/iac-bus/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+User=root
+
+EnvironmentFile=/etc/iac-bus/iac-bus.env
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
