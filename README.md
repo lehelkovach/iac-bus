@@ -74,6 +74,49 @@ Apply to a remote VM over SSH (from your local machine):
 ./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
 ```
 
+## Spawn Cursor Agents + Bus Announce
+
+This script spawns Cursor Cloud Agents and announces each agent on the bus.
+
+```bash
+export CURSOR_API_KEY="key_xxx..."
+python3 scripts/spawn-cursor-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --count 2 \
+  --payload '{"name":"agent-a"}' \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN"
+```
+
+Notes:
+- Cursor uses **Basic Auth** with the key as the username and a blank password.
+- `--payload` is passed directly to the Cursor API and can include custom fields.
+
+## Handoff: Terminate Cursor Agents
+
+Terminate agents explicitly by ID:
+```bash
+export CURSOR_API_KEY="key_xxx..."
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids "agent-id-1,agent-id-2"
+```
+
+Or extract IDs from a handoff notes file:
+```bash
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids-file /path/to/redroid-cloud-phone_notes.md
+```
+
+Or terminate agents announced on the bus:
+```bash
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN"
+```
+
 ## Topology Roadmap (Supervisor/Subordinate)
 
 The current bus is a simple channel-based relay. To support supervisor and
