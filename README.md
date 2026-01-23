@@ -5,6 +5,7 @@ Lightweight message bus for coordinating multiple agents over HTTP.
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
+- Queue-style work leasing (claim/ack/nack)
 - Optional bearer-token auth
 - Systemd service deployment
 
@@ -30,6 +31,36 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
+Queue messages are excluded from polling by default. To include them:
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?include_queue=true" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+### Claim from queue (work leasing)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/claim \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","lease_seconds":60}'
+```
+
+### Ack queue message
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/ack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>"}'
+```
+
+### Nack queue message (requeue)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>","requeue":true}'
+```
+
 ### Health check
 ```bash
 curl http://<BUS_IP>:8091/health
@@ -44,6 +75,7 @@ curl http://<BUS_IP>:8091/health
 | `BUS_API_TOKEN` | empty | Bearer token |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
+| `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 
 ## Local Run
@@ -61,6 +93,15 @@ sudo systemctl status iac-bus.service
 
 The deploy script installs to `/opt/iac-bus` and creates
 `/etc/iac-bus/iac-bus.env` for configuration.
+
+## OCI Deployment
+
+See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
+
+## Protocol Schema
+
+JSON schema definitions for the message protocol and queue endpoints live in
+`schemas/iac-bus.schema.json`.
 
 ## Hotfix (no OCI credentials)
 
