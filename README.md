@@ -151,6 +151,30 @@ Supervisor responds (allowing the agent to continue):
 }
 ```
 
+## Orchestration Jobs (dependencies + sync)
+
+Define job/step graphs with dependencies, time gates, and barrier sync points:
+
+- Schema: `schemas/orchestration.schema.json`
+- Python helper (ready-step evaluation): `orchestration.py`
+
+Example:
+```json
+{
+  "job_id": "job-1",
+  "name": "build-service",
+  "steps": [
+    {"id": "design"},
+    {"id": "impl", "depends_on": [{"step_id": "design"}]},
+    {"id": "tests", "depends_on": [{"step_id": "impl"}]},
+    {"id": "review", "wait_for": ["sync-1"]}
+  ],
+  "barriers": [
+    {"id": "sync-1", "requires": ["design", "impl", "tests"], "mode": "all_completed"}
+  ]
+}
+```
+
 ## Hotfix (no OCI credentials)
 
 Apply a hotfix directly on a VM by pulling a tarball from GitHub:
