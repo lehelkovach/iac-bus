@@ -111,6 +111,46 @@ portable envelope plus adapter interfaces:
 - Schema: `schemas/agent-contract.schema.json`
 - Python interface + marshalling helpers: `agent_contract.py`
 
+### Oversight / adjudication flow
+
+Subordinate requests a decision from the supervisor (with options):
+```json
+{
+  "kind": "control",
+  "action": "request_decision",
+  "from": "agent-2",
+  "to": "supervisor-1",
+  "conversation_id": "conv-99",
+  "state": "waiting_input",
+  "payload": {
+    "prompt": "Proceed with deploy?",
+    "choices": [
+      {"id": "continue", "label": "Continue"},
+      {"id": "pause", "label": "Pause and review"},
+      {"id": "abort", "label": "Abort"}
+    ],
+    "requires_approval": true,
+    "escalation_chain": ["supervisor-1", "user"]
+  }
+}
+```
+
+Supervisor responds (allowing the agent to continue):
+```json
+{
+  "kind": "response",
+  "action": "provide_decision",
+  "from": "supervisor-1",
+  "to": "agent-2",
+  "conversation_id": "conv-99",
+  "payload": {
+    "choice_id": "continue",
+    "approved": true,
+    "notes": "Proceed"
+  }
+}
+```
+
 ## Hotfix (no OCI credentials)
 
 Apply a hotfix directly on a VM by pulling a tarball from GitHub:

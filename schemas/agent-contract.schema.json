@@ -41,6 +41,8 @@
         "cancel_task",
         "request_input",
         "provide_input",
+        "request_decision",
+        "provide_decision",
         "claim_work",
         "ack_work",
         "nack_work",
@@ -111,6 +113,201 @@
         }
       },
       "additionalProperties": true
+    },
+    "ChoiceOption": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "value": {}
+      },
+      "additionalProperties": true
+    },
+    "InputRequest": {
+      "type": "object",
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChoiceOption"
+          }
+        },
+        "allow_freeform": {
+          "type": "boolean",
+          "default": true
+        },
+        "min_choices": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_choices": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_approval": {
+          "type": "boolean",
+          "default": false
+        },
+        "escalation_chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "InputResponse": {
+      "type": "object",
+      "properties": {
+        "response_text": {
+          "type": "string"
+        },
+        "choice_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "DecisionRequest": {
+      "type": "object",
+      "required": [
+        "prompt",
+        "choices"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChoiceOption"
+          }
+        },
+        "default_choice": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_approval": {
+          "type": "boolean",
+          "default": true
+        },
+        "escalation_chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "DecisionResponse": {
+      "type": "object",
+      "properties": {
+        "choice_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "choice_id"
+          ]
+        },
+        {
+          "required": [
+            "decision"
+          ]
+        }
+      ],
+      "additionalProperties": true
+    },
+    "ProgressUpdate": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "progress_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "state": {
+          "$ref": "#/$defs/AgentState"
+        },
+        "details": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
     }
   },
   "required": [
@@ -166,5 +363,99 @@
       "type": "object"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_input"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/InputRequest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "provide_input"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/InputResponse"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_decision"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/DecisionRequest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "provide_decision"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/DecisionResponse"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "report_status"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/ProgressUpdate"
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 }

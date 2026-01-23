@@ -43,6 +43,8 @@ class AgentAction(str, Enum):
     CANCEL_TASK = "cancel_task"
     REQUEST_INPUT = "request_input"
     PROVIDE_INPUT = "provide_input"
+    REQUEST_DECISION = "request_decision"
+    PROVIDE_DECISION = "provide_decision"
     CLAIM_WORK = "claim_work"
     ACK_WORK = "ack_work"
     NACK_WORK = "nack_work"
@@ -118,6 +120,204 @@ class AgentLease:
         )
 
 
+@dataclass
+class ChoiceOption:
+    option_id: str
+    label: str
+    description: Optional[str] = None
+    value: Optional[Any] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "id": self.option_id,
+            "label": self.label,
+            "description": self.description,
+            "value": self.value,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ChoiceOption":
+        return cls(
+            option_id=data["id"],
+            label=data["label"],
+            description=data.get("description"),
+            value=data.get("value"),
+        )
+
+
+@dataclass
+class InputRequest:
+    prompt: str
+    choices: Optional[list[ChoiceOption]] = None
+    allow_freeform: bool = True
+    min_choices: Optional[int] = None
+    max_choices: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+    requires_approval: bool = False
+    escalation_chain: Optional[list[str]] = None
+    context: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "prompt": self.prompt,
+            "choices": [choice.to_dict() for choice in self.choices] if self.choices else None,
+            "allow_freeform": self.allow_freeform,
+            "min_choices": self.min_choices,
+            "max_choices": self.max_choices,
+            "timeout_seconds": self.timeout_seconds,
+            "requires_approval": self.requires_approval,
+            "escalation_chain": self.escalation_chain,
+            "context": self.context,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InputRequest":
+        return cls(
+            prompt=data["prompt"],
+            choices=[ChoiceOption.from_dict(option) for option in data.get("choices", [])] or None,
+            allow_freeform=data.get("allow_freeform", True),
+            min_choices=data.get("min_choices"),
+            max_choices=data.get("max_choices"),
+            timeout_seconds=data.get("timeout_seconds"),
+            requires_approval=data.get("requires_approval", False),
+            escalation_chain=data.get("escalation_chain"),
+            context=data.get("context"),
+            metadata=data.get("metadata"),
+        )
+
+
+@dataclass
+class InputResponse:
+    response_text: Optional[str] = None
+    choice_ids: Optional[list[str]] = None
+    approved: Optional[bool] = None
+    notes: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "response_text": self.response_text,
+            "choice_ids": self.choice_ids,
+            "approved": self.approved,
+            "notes": self.notes,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InputResponse":
+        return cls(
+            response_text=data.get("response_text"),
+            choice_ids=data.get("choice_ids"),
+            approved=data.get("approved"),
+            notes=data.get("notes"),
+            metadata=data.get("metadata"),
+        )
+
+
+@dataclass
+class DecisionRequest:
+    prompt: str
+    choices: list[ChoiceOption]
+    default_choice: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    requires_approval: bool = True
+    escalation_chain: Optional[list[str]] = None
+    context: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "prompt": self.prompt,
+            "choices": [choice.to_dict() for choice in self.choices],
+            "default_choice": self.default_choice,
+            "timeout_seconds": self.timeout_seconds,
+            "requires_approval": self.requires_approval,
+            "escalation_chain": self.escalation_chain,
+            "context": self.context,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionRequest":
+        return cls(
+            prompt=data["prompt"],
+            choices=[ChoiceOption.from_dict(option) for option in data.get("choices", [])],
+            default_choice=data.get("default_choice"),
+            timeout_seconds=data.get("timeout_seconds"),
+            requires_approval=data.get("requires_approval", True),
+            escalation_chain=data.get("escalation_chain"),
+            context=data.get("context"),
+            metadata=data.get("metadata"),
+        )
+
+
+@dataclass
+class DecisionResponse:
+    choice_id: Optional[str] = None
+    decision: Optional[str] = None
+    approved: Optional[bool] = None
+    notes: Optional[str] = None
+    rationale: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "choice_id": self.choice_id,
+            "decision": self.decision,
+            "approved": self.approved,
+            "notes": self.notes,
+            "rationale": self.rationale,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionResponse":
+        return cls(
+            choice_id=data.get("choice_id"),
+            decision=data.get("decision"),
+            approved=data.get("approved"),
+            notes=data.get("notes"),
+            rationale=data.get("rationale"),
+            metadata=data.get("metadata"),
+        )
+
+
+@dataclass
+class ProgressUpdate:
+    summary: Optional[str] = None
+    progress_pct: Optional[float] = None
+    state: Optional[StateType] = None
+    details: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "summary": self.summary,
+            "progress_pct": self.progress_pct,
+            "state": AgentMessage._enum_value(self.state),
+            "details": self.details,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ProgressUpdate":
+        return cls(
+            summary=data.get("summary"),
+            progress_pct=data.get("progress_pct"),
+            state=_coerce_enum(data.get("state"), AgentState),
+            details=data.get("details"),
+            metadata=data.get("metadata"),
+        )
+
+
 ActionType = Union[AgentAction, str]
 KindType = Union[AgentKind, str]
 StateType = Union[AgentState, str]
@@ -136,7 +336,7 @@ class AgentMessage:
     trace_id: Optional[str] = None
     reply_to: Optional[str] = None
     state: Optional[StateType] = None
-    payload: Optional[Dict[str, Any]] = None
+    payload: Optional[Any] = None
     policy: Optional[AgentPolicy] = None
     lease: Optional[AgentLease] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -154,7 +354,7 @@ class AgentMessage:
             "trace_id": self.trace_id,
             "reply_to": self.reply_to,
             "state": self._enum_value(self.state),
-            "payload": self.payload,
+            "payload": _payload_to_dict(self.payload),
             "policy": self.policy.to_dict() if self.policy else None,
             "lease": self.lease.to_dict() if self.lease else None,
             "metadata": self.metadata,
@@ -205,13 +405,41 @@ def _coerce_enum(value: Any, enum_type: type[Enum]) -> Any:
         return value
 
 
+def _payload_to_dict(payload: Any) -> Any:
+    if payload is None:
+        return None
+    to_dict = getattr(payload, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return payload
+
+
+def parse_payload(action: ActionType, payload: Any) -> Any:
+    if payload is None:
+        return None
+    action_value = action.value if isinstance(action, Enum) else action
+    if not isinstance(payload, Mapping):
+        return payload
+    if action_value == AgentAction.REQUEST_INPUT.value:
+        return InputRequest.from_dict(payload)
+    if action_value == AgentAction.PROVIDE_INPUT.value:
+        return InputResponse.from_dict(payload)
+    if action_value == AgentAction.REQUEST_DECISION.value:
+        return DecisionRequest.from_dict(payload)
+    if action_value == AgentAction.PROVIDE_DECISION.value:
+        return DecisionResponse.from_dict(payload)
+    if action_value == AgentAction.REPORT_STATUS.value:
+        return ProgressUpdate.from_dict(payload)
+    return payload
+
+
 def new_message(
     *,
     kind: KindType,
     action: ActionType,
     source: str,
     target: Optional[str] = None,
-    payload: Optional[Dict[str, Any]] = None,
+    payload: Optional[Any] = None,
     policy: Optional[AgentPolicy] = None,
     lease: Optional[AgentLease] = None,
     conversation_id: Optional[str] = None,
@@ -235,6 +463,96 @@ def new_message(
         state=state,
         metadata=metadata,
         protocol=protocol,
+    )
+
+
+def request_input_message(
+    *,
+    source: str,
+    target: Optional[str],
+    request: InputRequest,
+    kind: KindType = AgentKind.CONTROL,
+    **kwargs: Any,
+) -> AgentMessage:
+    return new_message(
+        kind=kind,
+        action=AgentAction.REQUEST_INPUT,
+        source=source,
+        target=target,
+        payload=request,
+        **kwargs,
+    )
+
+
+def provide_input_message(
+    *,
+    source: str,
+    target: Optional[str],
+    response: InputResponse,
+    kind: KindType = AgentKind.RESPONSE,
+    **kwargs: Any,
+) -> AgentMessage:
+    return new_message(
+        kind=kind,
+        action=AgentAction.PROVIDE_INPUT,
+        source=source,
+        target=target,
+        payload=response,
+        **kwargs,
+    )
+
+
+def request_decision_message(
+    *,
+    source: str,
+    target: Optional[str],
+    request: DecisionRequest,
+    kind: KindType = AgentKind.CONTROL,
+    **kwargs: Any,
+) -> AgentMessage:
+    return new_message(
+        kind=kind,
+        action=AgentAction.REQUEST_DECISION,
+        source=source,
+        target=target,
+        payload=request,
+        **kwargs,
+    )
+
+
+def provide_decision_message(
+    *,
+    source: str,
+    target: Optional[str],
+    response: DecisionResponse,
+    kind: KindType = AgentKind.RESPONSE,
+    **kwargs: Any,
+) -> AgentMessage:
+    return new_message(
+        kind=kind,
+        action=AgentAction.PROVIDE_DECISION,
+        source=source,
+        target=target,
+        payload=response,
+        **kwargs,
+    )
+
+
+def status_update_message(
+    *,
+    source: str,
+    target: Optional[str],
+    update: ProgressUpdate,
+    kind: KindType = AgentKind.STATUS,
+    **kwargs: Any,
+) -> AgentMessage:
+    return new_message(
+        kind=kind,
+        action=AgentAction.REPORT_STATUS,
+        source=source,
+        target=target,
+        payload=update,
+        **kwargs,
     )
 
 

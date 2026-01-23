@@ -6,6 +6,11 @@ from agent_contract import (
     AgentMessage,
     AgentPolicy,
     AgentLease,
+    ChoiceOption,
+    DecisionRequest,
+    DecisionResponse,
+    InputRequest,
+    InputResponse,
     new_message,
 )
 
@@ -68,3 +73,78 @@ def test_agent_message_allows_custom_action():
     }
     parsed = AgentMessage.from_dict(data)
     assert parsed.action == "custom_action"
+
+
+def test_input_request_roundtrip():
+    request = InputRequest(
+        prompt="Need approval",
+        choices=[
+            ChoiceOption(option_id="continue", label="Continue"),
+            ChoiceOption(option_id="pause", label="Pause and review"),
+        ],
+        allow_freeform=False,
+        requires_approval=True,
+        escalation_chain=["supervisor-1", "user"],
+    )
+    data = request.to_dict()
+    assert data["prompt"] == "Need approval"
+    assert data["choices"][0]["id"] == "continue"
+
+    parsed = InputRequest.from_dict(data)
+    assert parsed.prompt == "Need approval"
+    assert parsed.choices
+    assert parsed.choices[0].option_id == "continue"
+
+
+def test_input_response_roundtrip():
+    response = InputResponse(
+        response_text="Approved",
+        approved=True,
+        notes="Proceed",
+    )
+    data = response.to_dict()
+    assert data["response_text"] == "Approved"
+    parsed = InputResponse.from_dict(data)
+    assert parsed.response_text == "Approved"
+    assert parsed.approved is True
+
+
+def test_decision_request_roundtrip():
+    request = DecisionRequest(
+        prompt="Select next step",
+        choices=[
+            ChoiceOption(option_id="continue", label="Continue"),
+            ChoiceOption(option_id="pause", label="Pause"),
+        ],
+        default_choice="continue",
+    )
+    data = request.to_dict()
+    assert data["default_choice"] == "continue"
+    parsed = DecisionRequest.from_dict(data)
+    assert parsed.prompt == "Select next step"
+    assert parsed.choices[1].option_id == "pause"
+
+
+def test_decision_response_roundtrip():
+    response = DecisionResponse(
+        choice_id="continue",
+        approved=True,
+        notes="Proceed",
+    )
+    data = response.to_dict()
+    assert data["choice_id"] == "continue"
+    parsed = DecisionResponse.from_dict(data)
+    assert parsed.choice_id == "continue"
+    assert parsed.approved is True
+
+
+def test_agent_message_payload_dataclass():
+    request = InputRequest(prompt="Proceed?")
+    msg = new_message(
+        kind=AgentKind.CONTROL,
+        action=AgentAction.REQUEST_INPUT,
+        source="agent-1",
+        payload=request,
+    )
+    data = msg.to_dict()
+    assert data["payload"]["prompt"] == "Proceed?"
