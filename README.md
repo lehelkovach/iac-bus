@@ -103,6 +103,11 @@ See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
 JSON schema definitions for the message protocol and queue endpoints live in
 `schemas/iac-bus.schema.json`.
 
+Protocol v1.1 adds orchestration message types:
+- `orchestration.job`
+- `orchestration.step.assign`
+- `orchestration.step.status`
+
 ## Universal Agent Contract
 
 Define shared agent behavior, actions, states, and control inputs with a

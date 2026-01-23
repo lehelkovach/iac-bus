@@ -11,6 +11,10 @@
         "message"
       ],
       "properties": {
+        "protocol": {
+          "type": "string",
+          "default": "iac-bus/1.1"
+        },
         "channel": {
           "type": "string",
           "default": "default"
@@ -70,6 +74,56 @@
           "minimum": 1
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.job"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationJobEnvelope"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.assign"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepAssignment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepStatus"
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": true
     },
     "Message": {
@@ -82,6 +136,9 @@
         "message"
       ],
       "properties": {
+        "protocol": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -157,6 +214,115 @@
           "type": "number"
         },
         "lease_id": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.job"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationJobEnvelope"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.assign"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepAssignment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepStatus"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "OrchestrationJobEnvelope": {
+      "type": "object",
+      "required": [
+        "job"
+      ],
+      "properties": {
+        "job": {
+          "$ref": "https://iac-bus.local/schemas/orchestration.schema.json"
+        }
+      },
+      "additionalProperties": true
+    },
+    "OrchestrationStepAssignment": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "step"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "step": {
+          "$ref": "https://iac-bus.local/schemas/orchestration.schema.json#/$defs/StepSpec"
+        }
+      },
+      "additionalProperties": true
+    },
+    "OrchestrationStepStatus": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "step_id",
+        "status"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "skipped",
+            "timed_out"
+          ]
+        },
+        "note": {
           "type": "string"
         }
       },
