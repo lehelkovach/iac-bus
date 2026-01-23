@@ -11,6 +11,7 @@ low-latency delivery over polling now and push transport later.
 - [x] Publish/poll over HTTP with in-memory retention.
 - [x] Queue leasing endpoints (claim/ack/nack).
 - [x] Protocol schema definitions for message + queue endpoints.
+- [x] Universal agent contract schema + adapter interface.
 - [x] Basic unit tests for auth, polling, and queue leasing.
 
 ### M1 - Identity, routing, and coordination

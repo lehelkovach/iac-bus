@@ -103,6 +103,14 @@ See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
 JSON schema definitions for the message protocol and queue endpoints live in
 `schemas/iac-bus.schema.json`.
 
+## Universal Agent Contract
+
+Define shared agent behavior, actions, states, and control inputs with a
+portable envelope plus adapter interfaces:
+
+- Schema: `schemas/agent-contract.schema.json`
+- Python interface + marshalling helpers: `agent_contract.py`
+
 ## Hotfix (no OCI credentials)
 
 Apply a hotfix directly on a VM by pulling a tarball from GitHub:
