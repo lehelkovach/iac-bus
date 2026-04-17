@@ -11,6 +11,18 @@ import uuid
 
 from flask import Flask, jsonify, request
 
+from orchestration import (
+    JobSpec,
+    StepStatus,
+    build_job_state,
+    get_ready_steps,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_running,
+    mark_step_skipped,
+    validate_job_spec,
+)
+
 app = Flask(__name__)
 
 # Logging
@@ -34,6 +46,10 @@ STATUS_LEASED = "leased"
 # In-memory state
 _bus_messages = []
 _bus_lock = threading.Lock()
+
+# Orchestration state
+_jobs = {}
+_jobs_lock = threading.Lock()
 
 
 def _require_auth():
@@ -60,6 +76,9 @@ def _parse_bool(value):
 
 def _normalize_message_payload(data):
     errors = []
+    protocol = data.get("protocol")
+    if protocol is not None and not isinstance(protocol, str):
+        errors.append("protocol must be string")
     channel = data.get("channel", "default")
     if not isinstance(channel, str):
         errors.append("channel must be string")
@@ -111,6 +130,7 @@ def _normalize_message_payload(data):
             errors.append("ttl_seconds must be > 0")
 
     payload = {
+        "protocol": protocol,
         "channel": channel,
         "sender": sender,
         "message": message,
@@ -142,6 +162,102 @@ def _release_message(message):
     message["lease_id"] = ""
 
 
+def _build_assignment_payload(job, step):
+    return {
+        "protocol": "iac-bus/1.1",
+        "channel": "orchestration",
+        "sender": "orchestrator",
+        "message": {
+            "job_id": job.job_id,
+            "step": step.to_dict(),
+        },
+        "type": "orchestration.step.assign",
+        "queue": step.queue or "orchestration",
+        "priority": step.priority,
+    }
+
+
+def _dispatch_ready_steps_locked(job_entry, now=None):
+    ready = get_ready_steps(job_entry["spec"], job_entry["state"], now)
+    payloads = []
+    for step in ready:
+        if step.step_id in job_entry["dispatched"]:
+            continue
+        job_entry["dispatched"].add(step.step_id)
+        payloads.append(_build_assignment_payload(job_entry["spec"], step))
+    return payloads
+
+
+def _register_job_locked(job_spec):
+    job_entry = {
+        "spec": job_spec,
+        "state": build_job_state(job_spec),
+        "dispatched": set(),
+    }
+    _jobs[job_spec.job_id] = job_entry
+    return _dispatch_ready_steps_locked(job_entry)
+
+
+def _update_job_step_locked(job_entry, step_id, status, sender):
+    now = time.time()
+    state = job_entry["state"]
+    step_state = state.get_state(step_id)
+    status_enum = StepStatus(status)
+    if status_enum == StepStatus.RUNNING:
+        mark_step_running(state, step_id, now=now, assigned_to=sender)
+    elif status_enum == StepStatus.COMPLETED:
+        mark_step_completed(state, step_id, now=now)
+    elif status_enum == StepStatus.FAILED:
+        mark_step_failed(state, step_id, now=now)
+    elif status_enum == StepStatus.SKIPPED:
+        mark_step_skipped(state, step_id, now=now)
+    elif status_enum == StepStatus.TIMED_OUT:
+        step_state.mark(StepStatus.TIMED_OUT, now=now)
+    else:
+        step_state.mark(status_enum, now=now)
+    return _dispatch_ready_steps_locked(job_entry, now=now)
+
+
+def _prepare_orchestration_action(payload):
+    msg_type = payload.get("type")
+    if msg_type == "orchestration.job":
+        message = payload.get("message")
+        if not isinstance(message, dict) or "job" not in message:
+            return None, ("job payload required", 400)
+        try:
+            job_spec = JobSpec.from_dict(message["job"])
+            validate_job_spec(job_spec)
+        except (KeyError, TypeError, ValueError) as exc:
+            return None, (str(exc), 400)
+        return {"action": "job", "job_spec": job_spec}, None
+    if msg_type == "orchestration.step.status":
+        message = payload.get("message")
+        if not isinstance(message, dict):
+            return None, ("message must be object", 400)
+        job_id = message.get("job_id")
+        step_id = message.get("step_id")
+        status = message.get("status")
+        if not job_id or not step_id or not status:
+            return None, ("job_id, step_id, status required", 400)
+        try:
+            StepStatus(status)
+        except ValueError as exc:
+            return None, (str(exc), 400)
+        with _jobs_lock:
+            job_entry = _jobs.get(job_id)
+            if not job_entry:
+                return None, ("job not found", 404)
+            if step_id not in job_entry["state"].step_states:
+                return None, ("step not found", 404)
+        return {
+            "action": "step_status",
+            "job_id": job_id,
+            "step_id": step_id,
+            "status": status,
+        }, None
+    return None, None
+
+
 def _bus_prune(now=None):
     now = now or time.time()
     with _bus_lock:
@@ -159,6 +275,7 @@ def _bus_add_message(payload):
     msg = {
         "id": uuid.uuid4().hex,
         "ts": time.time(),
+        "protocol": payload.get("protocol") or "iac-bus/1.0",
         "channel": payload["channel"],
         "sender": payload["sender"],
         "message": payload["message"],
@@ -230,7 +347,26 @@ def bus_post_message():
     payload, errors = _normalize_message_payload(data)
     if errors:
         return jsonify({"error": "invalid message", "details": errors}), 400
+    orch_action, orch_error = _prepare_orchestration_action(payload)
+    if orch_error:
+        error_msg, status_code = orch_error
+        return jsonify({"error": error_msg}), status_code
     msg = _bus_add_message(payload)
+    if orch_action:
+        if orch_action["action"] == "job":
+            with _jobs_lock:
+                payloads = _register_job_locked(orch_action["job_spec"])
+        else:
+            with _jobs_lock:
+                job_entry = _jobs.get(orch_action["job_id"])
+                payloads = _update_job_step_locked(
+                    job_entry,
+                    orch_action["step_id"],
+                    orch_action["status"],
+                    payload["sender"],
+                )
+        for assignment in payloads:
+            _bus_add_message(assignment)
     return jsonify({"success": True, "message": msg}), 201
 
 
@@ -338,6 +474,28 @@ def bus_nack_queue_message():
     if error:
         return jsonify({"error": error}), 409
     return jsonify({"success": True, "message": msg})
+
+
+@app.route("/bus/orchestration/jobs/<job_id>", methods=["GET"])
+def bus_get_orchestration_job(job_id):
+    with _jobs_lock:
+        entry = _jobs.get(job_id)
+        if not entry:
+            return jsonify({"error": "job not found"}), 404
+        job = entry["spec"].to_dict()
+        state = {step_id: step_state.to_dict() for step_id, step_state in entry["state"].step_states.items()}
+    return jsonify({"job": job, "state": state})
+
+
+@app.route("/bus/orchestration/jobs/<job_id>/ready", methods=["GET"])
+def bus_get_orchestration_ready(job_id):
+    with _jobs_lock:
+        entry = _jobs.get(job_id)
+        if not entry:
+            return jsonify({"error": "job not found"}), 404
+        ready = get_ready_steps(entry["spec"], entry["state"])
+        ready = [step for step in ready if step.step_id not in entry["dispatched"]]
+    return jsonify({"steps": [step.to_dict() for step in ready]})
 
 
 @app.route("/health", methods=["GET"])

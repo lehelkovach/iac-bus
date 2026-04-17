@@ -41,6 +41,12 @@ class Dependency:
             min_delay_seconds=data.get("min_delay_seconds"),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        data = {"step_id": self.step_id}
+        if self.min_delay_seconds is not None:
+            data["min_delay_seconds"] = self.min_delay_seconds
+        return data
+
 
 @dataclass(frozen=True)
 class BarrierSpec:
@@ -56,6 +62,13 @@ class BarrierSpec:
             requires=list(data.get("requires", [])),
             mode=BarrierMode(mode),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.barrier_id,
+            "requires": list(self.requires),
+            "mode": self.mode.value,
+        }
 
 
 @dataclass(frozen=True)
@@ -94,6 +107,22 @@ class StepSpec:
             metadata=data.get("metadata"),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "id": self.step_id,
+            "title": self.title,
+            "description": self.description,
+            "depends_on": [dep.to_dict() for dep in self.depends_on] if self.depends_on else None,
+            "wait_for": list(self.wait_for) if self.wait_for else None,
+            "not_before_ts": self.not_before_ts,
+            "deadline_ts": self.deadline_ts,
+            "parallel_group": self.parallel_group,
+            "queue": self.queue,
+            "priority": self.priority if self.priority != 0 else None,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
 
 @dataclass(frozen=True)
 class JobSpec:
@@ -127,6 +156,19 @@ class JobSpec:
             metadata=data.get("metadata"),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "job_id": self.job_id,
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at,
+            "deadline_ts": self.deadline_ts,
+            "steps": [step.to_dict() for step in self.steps],
+            "barriers": [barrier.to_dict() for barrier in self.barriers] if self.barriers else None,
+            "metadata": self.metadata,
+        }
+        return {key: value for key, value in data.items() if value is not None}
+
 
 @dataclass
 class StepState:
@@ -146,6 +188,17 @@ class StepState:
             self.attempts += 1
         if status.terminal:
             self.completed_at = now
+
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "status": self.status.value,
+            "assigned_to": self.assigned_to,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "last_updated": self.last_updated,
+            "attempts": self.attempts,
+        }
+        return {key: value for key, value in data.items() if value is not None}
 
 
 @dataclass
