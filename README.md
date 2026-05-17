@@ -26,6 +26,8 @@ simple to deploy and restart.
 
 ## Features
 - Simple REST endpoints for posting and polling messages
+- Coordination metadata for directed routing, message kinds, threads, replies,
+  and structured context
 - In-memory retention with size and time limits
 - Optional bearer-token authentication
 - Systemd deployment via `deploy.sh`
@@ -76,6 +78,8 @@ The deploy script installs to `/opt/iac-bus` and creates
 - `scripts/hotfix-remote.sh` applies a hotfix over SSH from your machine.
 - `scripts/spawn-cursor-agents.py` spawns Cursor agents and announces them on the bus.
 - `scripts/handoff-terminate-agents.py` terminates Cursor agents by ID, file, or bus.
+- `scripts/mock-agent-roundtrip.py` exercises orchestrator-to-worker messaging
+  against a live bus.
 
 Examples:
 ```bash
@@ -93,6 +97,13 @@ python3 scripts/spawn-cursor-agents.py \
   --bus-token "$BUS_API_TOKEN"
 ```
 
+```bash
+python3 scripts/mock-agent-roundtrip.py \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN" \
+  --worker-count 2
+```
+
 ## Development
 ```bash
 python3 -m venv venv
@@ -105,15 +116,20 @@ python3 -m venv venv
 ```
 
 ## Roadmap
+- Harden the new coordination envelope for Cursor agents: message kind, target,
+  thread, reply, and metadata conventions
 - Identity and presence tracking
 - Roles and hierarchy for supervisor/subordinate agents
-- Directed routing and group addressing
-- Work leasing and acknowledgements
-- Conversation threads
+- Group addressing
+- Work leasing, acknowledgements, and retries
 - Access control and channel ACLs
+- Slack or chat bridge for human/orchestrator visibility
 - Optional persistence (SQLite/Postgres/Redis)
 - Streaming (SSE or WebSocket)
 - Rate limiting
+
+See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for the current feature
+priority assessment and mock-agent validation plan.
 
 ## Documentation
 Detailed documentation lives in [DOCUMENTATION.md](DOCUMENTATION.md).

@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import uuid
+from typing import Any, Dict, Tuple
 
 from flask import Flask, jsonify, request
 
@@ -29,6 +30,31 @@ BUS_RETENTION_SECONDS = int(os.environ.get("BUS_RETENTION_SECONDS", "3600"))
 # In-memory state
 _bus_messages = []
 _bus_lock = threading.Lock()
+
+
+def _string_field(data: Dict[str, Any], field: str, default: str = "") -> Tuple[str, str]:
+    value = data.get(field, default)
+    if value is None:
+        return default, ""
+    if not isinstance(value, str):
+        return "", f"{field} must be a string"
+    return value, ""
+
+
+def _metadata_field(data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    value = data.get("metadata", {})
+    if value is None:
+        return {}, ""
+    if not isinstance(value, dict):
+        return {}, "metadata must be an object"
+    return value, ""
+
+
+def _message_matches_target(msg: Dict[str, Any], target: str, include_broadcast: bool) -> bool:
+    msg_target = msg.get("target", "")
+    if msg_target == target:
+        return True
+    return include_broadcast and not msg_target
 
 
 def _require_auth():
@@ -55,13 +81,28 @@ def _bus_prune(now=None):
             _bus_messages[:] = _bus_messages[-BUS_MAX_MESSAGES:]
 
 
-def _bus_add_message(channel, sender, message):
+def _bus_add_message(
+    channel,
+    sender,
+    message,
+    *,
+    kind="note",
+    target="",
+    thread_id="",
+    reply_to="",
+    metadata=None,
+):
     msg = {
         "id": uuid.uuid4().hex,
         "ts": time.time(),
         "channel": channel,
         "sender": sender,
-        "message": message
+        "target": target,
+        "kind": kind,
+        "thread_id": thread_id,
+        "reply_to": reply_to,
+        "message": message,
+        "metadata": metadata or {},
     }
     with _bus_lock:
         _bus_messages.append(msg)
@@ -72,20 +113,53 @@ def _bus_add_message(channel, sender, message):
 @app.route("/bus/messages", methods=["POST"])
 def bus_post_message():
     data = request.get_json() or {}
-    channel = data.get("channel", "default")
-    sender = data.get("sender", "agent")
-    message = data.get("message", "")
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON body must be an object"}), 400
+
+    fields = {}
+    for field, default in (
+        ("channel", "default"),
+        ("sender", "agent"),
+        ("target", ""),
+        ("kind", "note"),
+        ("thread_id", ""),
+        ("reply_to", ""),
+    ):
+        fields[field], error = _string_field(data, field, default)
+        if error:
+            return jsonify({"error": error}), 400
+
+    message, error = _string_field(data, "message", "")
+    if error:
+        return jsonify({"error": error}), 400
+    metadata, error = _metadata_field(data)
+    if error:
+        return jsonify({"error": error}), 400
+
     if not message:
         return jsonify({"error": "message required"}), 400
-    msg = _bus_add_message(channel, sender, message)
+    msg = _bus_add_message(message=message, metadata=metadata, **fields)
     return jsonify({"success": True, "message": msg}), 201
 
 
 @app.route("/bus/messages", methods=["GET"])
 def bus_get_messages():
     channel = request.args.get("channel", "")
+    target = request.args.get("target", "")
+    kind = request.args.get("kind", "")
+    thread_id = request.args.get("thread_id", "")
     since_id = request.args.get("since_id", "")
-    limit = int(request.args.get("limit", "50"))
+    include_broadcast = request.args.get("include_broadcast", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    if limit < 1:
+        return jsonify({"error": "limit must be greater than 0"}), 400
     if limit > 200:
         limit = 200
     _bus_prune()
@@ -93,6 +167,12 @@ def bus_get_messages():
         msgs = list(_bus_messages)
     if channel:
         msgs = [m for m in msgs if m["channel"] == channel]
+    if target:
+        msgs = [m for m in msgs if _message_matches_target(m, target, include_broadcast)]
+    if kind:
+        msgs = [m for m in msgs if m.get("kind", "") == kind]
+    if thread_id:
+        msgs = [m for m in msgs if m.get("thread_id", "") == thread_id]
     if since_id:
         try:
             idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)

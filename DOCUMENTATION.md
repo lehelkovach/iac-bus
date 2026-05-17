@@ -29,7 +29,12 @@ Each message stored in the bus has the following fields:
 | `ts` | number | Unix epoch time in seconds (float) |
 | `channel` | string | Channel name for grouping messages |
 | `sender` | string | Sender identifier |
+| `target` | string | Optional recipient identifier; empty means broadcast |
+| `kind` | string | Message category such as `note`, `plan`, `task`, `ack`, or `lifecycle.spawned` |
+| `thread_id` | string | Optional correlation key for multi-message workflows |
+| `reply_to` | string | Optional message ID this message answers or acknowledges |
 | `message` | string | Message payload |
+| `metadata` | object | Optional structured context for agents |
 
 ## Authentication
 If `BUS_API_TOKEN` is set, all endpoints except `/health` require a bearer
@@ -49,11 +54,17 @@ Create a new message.
 Request body (JSON):
 - `channel` (string, optional, default: `"default"`)
 - `sender` (string, optional, default: `"agent"`)
+- `target` (string, optional, default: empty broadcast)
+- `kind` (string, optional, default: `"note"`)
+- `thread_id` (string, optional)
+- `reply_to` (string, optional)
 - `message` (string, required)
+- `metadata` (object, optional)
 
 Response:
 - `201 Created` on success
 - `400 Bad Request` if `message` is missing
+- `400 Bad Request` if a string field or `metadata` has the wrong type
 - `401 Unauthorized` if the token is required and missing/invalid
 
 Example:
@@ -61,7 +72,7 @@ Example:
 curl -X POST "http://127.0.0.1:8091/bus/messages" \
   -H "Authorization: Bearer $BUS_API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"channel":"ops","sender":"agent-a","message":"ready"}'
+  -d '{"channel":"ops","sender":"agent-a","target":"orchestrator","kind":"ack","thread_id":"deploy-42","reply_to":"abc123","message":"ready","metadata":{"status":"done"}}'
 ```
 
 ### GET /bus/messages
@@ -69,6 +80,13 @@ Fetch messages.
 
 Query parameters:
 - `channel` (string, optional) - filter by channel
+- `target` (string, optional) - return messages for a recipient. Broadcast
+  messages are included by default.
+- `kind` (string, optional) - filter by message category
+- `thread_id` (string, optional) - filter by workflow correlation key
+- `include_broadcast` (bool-like, optional, default: `true`) - when filtering
+  by `target`, include messages with no target unless this is `false`, `0`, or
+  `no`
 - `since_id` (string, optional) - return messages after this ID
 - `limit` (int, optional, default: `50`, max: `200`)
 
@@ -78,6 +96,12 @@ Response:
 Example:
 ```bash
 curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Directed worker inbox example:
+```bash
+curl "http://127.0.0.1:8091/bus/messages?channel=coordination&target=worker-a&kind=task&thread_id=plan-1&include_broadcast=false" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
@@ -105,6 +129,8 @@ curl "http://127.0.0.1:8091/health"
 - Retention is enforced by time (`BUS_RETENTION_SECONDS`) and size
   (`BUS_MAX_MESSAGES`).
 - `limit` is capped at `200`.
+- `target` filtering includes broadcast messages by default so agents can poll
+  one inbox for all-hands and direct messages.
 - `since_id` returns messages strictly after the matching ID if found; if the
   ID is not present, all messages for the query are returned.
 
@@ -167,7 +193,9 @@ Environment variables:
 - `REF` (default: `main`)
 
 ### Spawn Cursor Agents
-Spawns Cursor Cloud agents and announces each agent on the bus.
+Spawns Cursor Cloud agents and announces each agent on the bus with
+`kind=lifecycle.spawned`, `target=<agent-id>`, and the raw Cursor response in
+`metadata.agent`.
 
 ```bash
 export CURSOR_API_KEY="key_xxx..."
@@ -206,6 +234,18 @@ python3 scripts/handoff-terminate-agents.py \
   --bus-token "$BUS_API_TOKEN"
 ```
 
+### Mock Agent Roundtrip
+Runs an orchestrator/worker exercise against a live bus. It posts a plan, sends
+directed tasks, simulates workers polling their inboxes, and posts
+acknowledgements back to the orchestrator.
+
+```bash
+python3 scripts/mock-agent-roundtrip.py \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN" \
+  --worker-count 2
+```
+
 ## Testing
 ```bash
 python3 -m venv venv
@@ -225,12 +265,17 @@ python3 -m venv venv
 - There is no built-in persistence or fine-grained access control.
 
 ## Roadmap
+- Stabilize Cursor coordination conventions for `kind`, `target`, `thread_id`,
+  `reply_to`, and `metadata`
 - Identity and presence tracking
 - Roles and hierarchy for supervisor/subordinate agents
-- Directed routing and group addressing
-- Work leasing and acknowledgements
-- Conversation threads
+- Group addressing
+- Work leasing, acknowledgements, and retries
 - Access control and channel ACLs
+- Slack or chat bridge for human/orchestrator visibility
 - Optional persistence (SQLite/Postgres/Redis)
 - Streaming (SSE or WebSocket)
 - Rate limiting
+
+See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for feature priorities and the
+current validation plan.

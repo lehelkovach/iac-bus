@@ -39,7 +39,14 @@ def announce_agents(bus_url: str, bus_token: str, agents: List[Dict], channel: s
     for agent in agents:
         agent_id = agent.get("id") or agent.get("agent_id") or agent.get("name")
         msg = f"spawned:{agent_id}"
-        payload = {"channel": channel, "sender": "controller", "message": msg}
+        payload = {
+            "channel": channel,
+            "sender": "controller",
+            "target": str(agent_id or ""),
+            "kind": "lifecycle.spawned",
+            "message": msg,
+            "metadata": {"agent": agent},
+        }
         resp = requests.post(
             f"{bus_url}/bus/messages",
             headers=_bus_headers(bus_token),
