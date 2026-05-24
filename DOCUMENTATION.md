@@ -2,6 +2,7 @@
 
 ## Contents
 - [System Overview](#system-overview)
+- [Feature Status Labels](#feature-status-labels)
 - [Message Model](#message-model)
 - [Authentication](#authentication)
 - [API Reference](#api-reference)
@@ -20,6 +21,13 @@ The Inter-Agent Communication Bus (IAC Bus) is a small Flask application that
 accepts messages over HTTP and keeps them in memory. It is designed for quick,
 lightweight coordination between agents without requiring external storage.
 
+## Feature Status Labels
+This document uses explicit status labels:
+
+- **Implemented**: available in the current service.
+- **Planned**: accepted target for upcoming development, not implemented yet.
+- **Proposed**: under consideration, not committed.
+
 ## Message Model
 Each message stored in the bus has the following fields:
 
@@ -30,6 +38,29 @@ Each message stored in the bus has the following fields:
 | `channel` | string | Channel name for grouping messages |
 | `sender` | string | Sender identifier |
 | `message` | string | Message payload |
+
+Current status: **Implemented**.
+
+### Planned Message Metadata Extensions
+Status: **Planned** (not yet implemented).
+
+To support multi-agent orchestration, source-medium tracking, and user/audit
+logging, the event envelope is expected to expand with fields such as:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `event_id` | string | Stable event identifier for idempotent processing |
+| `actor_type` | string | `agent`, `human`, or `system` |
+| `actor_id` | string | Identity such as `agent:cursor@ide` or `human:lehel@slack` |
+| `agent_purpose` | string | Agent role such as `dispatcher`, `coder`, `reviewer` |
+| `source_medium` | string | Origin medium (`slack`, `ide`, `web`, `api`, etc.) |
+| `action_type` | string | Event class (`chat-message`, `plan`, `operation`, `result`) |
+| `command_interpretation` | object | Parsed command intent and normalized action |
+| `command_confidence` | number | Parser confidence (0.0 to 1.0) |
+| `repo` | string | Repository name or identifier |
+| `branch` | string | Branch context for code actions |
+| `correlation_id` | string | Correlates related events in one task flow |
+| `parent_event_id` | string | Links interpretation/result events to source input |
 
 ## Authentication
 If `BUS_API_TOKEN` is set, all endpoints except `/health` require a bearer
@@ -225,12 +256,36 @@ python3 -m venv venv
 - There is no built-in persistence or fine-grained access control.
 
 ## Roadmap
+All items below are **Planned** unless explicitly marked otherwise.
+
+### Persistence and Durability
+- Optional persistence backend (SQLite/Postgres/Redis)
+- Durable event replay and recovery across service restarts
+- Consumer checkpointing for reliable polling
+
+### Multi-Agent Coordination
 - Identity and presence tracking
 - Roles and hierarchy for supervisor/subordinate agents
+- Agent-purpose declaration (`dispatcher`, `coder`, `reviewer`, `observer`)
 - Directed routing and group addressing
 - Work leasing and acknowledgements
 - Conversation threads
+
+### Source and Medium Awareness
+- Source-medium tracking for each event (Slack, IDE, Web UI, API, automation)
+- Routing and filtering by medium
+- Medium-aware policies for relay vs execution authority
+
+### Human/User and Command Logging
+- First-class human event logging (`actor_type=human`)
+- Chat-message logging with source attribution
+- Command interpretation logging (raw input -> parsed intent -> action)
+- Optional validation workflow for ambiguous interpretations
+
+### Security and Controls
 - Access control and channel ACLs
-- Optional persistence (SQLite/Postgres/Redis)
-- Streaming (SSE or WebSocket)
 - Rate limiting
+
+### Transport and Integrations
+- Streaming transport (SSE or WebSocket)
+- External mirror integrations (for example Slack notification bridges)
