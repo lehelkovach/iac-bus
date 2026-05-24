@@ -1,0 +1,44 @@
+# Agent Prompt Scaffolding
+
+This directory defines reusable prompt files for ACP-managed agents.
+
+## Identity Convention
+Use readable handles mapped to immutable UUIDs.
+
+- Handle format: `agent:<brand>.<repo>.<index>@<medium>`
+- Example: `agent:cursor.iac-bus.0@web`
+- Canonical identity in storage: `agent_uuid` (never changes)
+
+## Prompt Files
+- `orchestrator.prompt.md` - parent/supervisor agent behavior
+- `worker.prompt.md` - execution-focused subordinate behavior
+- `reviewer.prompt.md` - verification and quality gate behavior
+
+## Required Prompt Header Fields
+Every prompt file should define:
+
+- `AgentHandle`
+- `AgentUUID`
+- `Role`
+- `RepoScope`
+- `AuthorityLevel`
+- `InputChannels`
+- `OutputChannels`
+- `SuccessCriteria`
+
+## Required Behavioral Blocks
+Every prompt should include:
+
+1. Goal
+2. Inputs
+3. Context
+4. Tools
+5. Constraints
+6. OutputFormat
+7. CompletionChecks
+
+## Coordination Rules
+- Read latest coordination events before planning.
+- Respect task dependency states and lock ownership.
+- Emit provenance-rich events for every material action.
+- Escalate blockers instead of silently bypassing constraints.

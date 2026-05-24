@@ -9,6 +9,7 @@
 - [Runtime Behavior](#runtime-behavior)
 - [Deployment](#deployment)
 - [Operations](#operations)
+- [Planning Artifacts](#planning-artifacts)
 - [Scripts](#scripts)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
@@ -137,6 +138,14 @@ BUS_API_TOKEN=devtoken ./venv/bin/gunicorn -b 0.0.0.0:8091 server:app
 - Logs are emitted to stdout using the configured `BUS_LOG_LEVEL`.
 - The systemd unit restarts on failure.
 - The service runs as `root` by default in the provided unit file.
+
+## Planning Artifacts
+The repository includes a planning/scaffolding set for ACP evolution:
+
+- `docs/ACP_DEV_PLAN.md` - consolidated MVP-first architecture and delivery plan.
+- `docs/ROADMAP.md` - versioned roadmap from foundational to advanced capabilities.
+- `docs/TESTING_STRATEGY.md` - TDD/BDD cascading gates and definition of done.
+- `prompts/README.md` and `prompts/*.prompt.md` - agent prompt scaffolding.
 
 ## Scripts
 

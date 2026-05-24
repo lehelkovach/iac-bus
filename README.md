@@ -15,6 +15,7 @@ Lightweight HTTP message bus for coordinating multiple agents.
 - [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Documentation](#documentation)
+- [Planning and Scaffolding](#planning-and-scaffolding)
 - [Contributing](#contributing)
 - [Security](#security)
 - [License](#license)
@@ -117,6 +118,14 @@ python3 -m venv venv
 
 ## Documentation
 Detailed documentation lives in [DOCUMENTATION.md](DOCUMENTATION.md).
+
+## Planning and Scaffolding
+Implementation planning and execution scaffolding are documented in:
+
+- [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
+- [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.
+- [prompts/README.md](prompts/README.md) - agent prompt file conventions and usage.
 
 ## Contributing
 Open an issue or submit a pull request. Please include tests for new behavior.
