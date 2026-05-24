@@ -5,6 +5,7 @@ Lightweight HTTP message bus for coordinating multiple agents.
 ## Table of Contents
 - [Overview](#overview)
 - [Features](#features)
+- [Feature Status Labels](#feature-status-labels)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -30,6 +31,13 @@ simple to deploy and restart.
 - Optional bearer-token authentication
 - Systemd deployment via `deploy.sh`
 - Utility scripts for hotfixes and agent lifecycle
+
+## Feature Status Labels
+This repository uses explicit status labels in documentation:
+
+- **Implemented**: available in the current codebase and deployable now.
+- **Planned**: accepted development target, not yet implemented.
+- **Proposed**: candidate direction under evaluation.
 
 ## Architecture
 - Single-process, in-memory message store
@@ -105,6 +113,8 @@ python3 -m venv venv
 ```
 
 ## Roadmap
+The following capabilities are **Planned** and not yet implemented:
+
 - Identity and presence tracking
 - Roles and hierarchy for supervisor/subordinate agents
 - Directed routing and group addressing
@@ -114,6 +124,10 @@ python3 -m venv venv
 - Optional persistence (SQLite/Postgres/Redis)
 - Streaming (SSE or WebSocket)
 - Rate limiting
+- Multi-agent purpose metadata (for example: dispatcher, coder, reviewer)
+- Communication source-medium tracking (for example: Slack, IDE, Web UI, API)
+- Human-user event logging for chat instructions and commands
+- Command interpretation logging (capturing parsed intent and resolved action)
 
 ## Documentation
 Detailed documentation lives in [DOCUMENTATION.md](DOCUMENTATION.md).
