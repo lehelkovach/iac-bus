@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iac-bus.local/schemas/iac-bus.schema.json",
+  "title": "IAC Bus Protocol",
+  "type": "object",
+  "description": "Schema definitions for IAC Bus message and queue endpoints.",
+  "$defs": {
+    "MessageCreate": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "default": "iac-bus/1.1"
+        },
+        "channel": {
+          "type": "string",
+          "default": "default"
+        },
+        "sender": {
+          "type": "string",
+          "default": "agent"
+        },
+        "message": {
+          "description": "Payload",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object"
+            },
+            {
+              "type": "array"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "default": "event"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "reply_to": {
+          "type": "string"
+        },
+        "recipient": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "default": 0
+        },
+        "headers": {
+          "type": "object"
+        },
+        "ttl_seconds": {
+          "type": "number",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.job"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationJobEnvelope"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.assign"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepAssignment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepStatus"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "Message": {
+      "type": "object",
+      "required": [
+        "id",
+        "ts",
+        "channel",
+        "sender",
+        "message"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "sender": {
+          "type": "string"
+        },
+        "message": {
+          "description": "Payload",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object"
+            },
+            {
+              "type": "array"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "reply_to": {
+          "type": "string"
+        },
+        "recipient": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "headers": {
+          "type": "object"
+        },
+        "ttl_seconds": {
+          "type": "number",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "published",
+            "pending",
+            "leased"
+          ]
+        },
+        "leased_by": {
+          "type": "string"
+        },
+        "lease_until": {
+          "type": "number"
+        },
+        "lease_id": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.job"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationJobEnvelope"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.assign"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepAssignment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "orchestration.step.status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "$ref": "#/$defs/OrchestrationStepStatus"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "OrchestrationJobEnvelope": {
+      "type": "object",
+      "required": [
+        "job"
+      ],
+      "properties": {
+        "job": {
+          "$ref": "https://iac-bus.local/schemas/orchestration.schema.json"
+        }
+      },
+      "additionalProperties": true
+    },
+    "OrchestrationStepAssignment": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "step"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "step": {
+          "$ref": "https://iac-bus.local/schemas/orchestration.schema.json#/$defs/StepSpec"
+        }
+      },
+      "additionalProperties": true
+    },
+    "OrchestrationStepStatus": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "step_id",
+        "status"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "skipped",
+            "timed_out"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "QueueClaimRequest": {
+      "type": "object",
+      "required": [
+        "queue",
+        "worker"
+      ],
+      "properties": {
+        "queue": {
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        },
+        "lease_seconds": {
+          "type": "number",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueAckRequest": {
+      "type": "object",
+      "required": [
+        "queue",
+        "message_id",
+        "worker",
+        "lease_id"
+      ],
+      "properties": {
+        "queue": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        },
+        "lease_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueNackRequest": {
+      "type": "object",
+      "required": [
+        "queue",
+        "message_id",
+        "worker",
+        "lease_id",
+        "requeue"
+      ],
+      "properties": {
+        "queue": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        },
+        "lease_id": {
+          "type": "string"
+        },
+        "requeue": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

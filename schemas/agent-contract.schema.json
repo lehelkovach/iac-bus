@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iac-bus.local/schemas/agent-contract.schema.json",
+  "title": "Universal Agent Contract",
+  "type": "object",
+  "description": "Portable agent control envelope for commands, events, and status.",
+  "$defs": {
+    "AgentKind": {
+      "type": "string",
+      "enum": [
+        "command",
+        "event",
+        "status",
+        "response",
+        "control",
+        "heartbeat",
+        "registration"
+      ]
+    },
+    "AgentState": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "waiting_input",
+        "paused",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out"
+      ]
+    },
+    "AgentAction": {
+      "type": "string",
+      "enum": [
+        "register",
+        "heartbeat",
+        "start_task",
+        "pause_task",
+        "resume_task",
+        "cancel_task",
+        "request_input",
+        "provide_input",
+        "request_decision",
+        "provide_decision",
+        "claim_work",
+        "ack_work",
+        "nack_work",
+        "report_status",
+        "report_result",
+        "update_policy"
+      ]
+    },
+    "AgentPolicy": {
+      "type": "object",
+      "properties": {
+        "allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denylist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_cost": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "secrets_ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "AgentLease": {
+      "type": "object",
+      "properties": {
+        "queue": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "lease_id": {
+          "type": "string"
+        },
+        "lease_until": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ChoiceOption": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "value": {}
+      },
+      "additionalProperties": true
+    },
+    "InputRequest": {
+      "type": "object",
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChoiceOption"
+          }
+        },
+        "allow_freeform": {
+          "type": "boolean",
+          "default": true
+        },
+        "min_choices": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_choices": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_approval": {
+          "type": "boolean",
+          "default": false
+        },
+        "escalation_chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "InputResponse": {
+      "type": "object",
+      "properties": {
+        "response_text": {
+          "type": "string"
+        },
+        "choice_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "DecisionRequest": {
+      "type": "object",
+      "required": [
+        "prompt",
+        "choices"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChoiceOption"
+          }
+        },
+        "default_choice": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_approval": {
+          "type": "boolean",
+          "default": true
+        },
+        "escalation_chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "DecisionResponse": {
+      "type": "object",
+      "properties": {
+        "choice_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "choice_id"
+          ]
+        },
+        {
+          "required": [
+            "decision"
+          ]
+        }
+      ],
+      "additionalProperties": true
+    },
+    "ProgressUpdate": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "progress_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "state": {
+          "$ref": "#/$defs/AgentState"
+        },
+        "details": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "kind",
+    "action",
+    "from"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "number"
+    },
+    "protocol": {
+      "type": "string",
+      "default": "iac-agent/1.0"
+    },
+    "kind": {
+      "$ref": "#/$defs/AgentKind"
+    },
+    "action": {
+      "$ref": "#/$defs/AgentAction"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "conversation_id": {
+      "type": "string"
+    },
+    "trace_id": {
+      "type": "string"
+    },
+    "reply_to": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/AgentState"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "policy": {
+      "$ref": "#/$defs/AgentPolicy"
+    },
+    "lease": {
+      "$ref": "#/$defs/AgentLease"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_input"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/InputRequest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "provide_input"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/InputResponse"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "request_decision"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/DecisionRequest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "provide_decision"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/DecisionResponse"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "report_status"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/ProgressUpdate"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

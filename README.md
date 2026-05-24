@@ -1,49 +1,72 @@
 # Inter-Agent Communication Bus (IAC Bus)
 
-Lightweight HTTP message bus for coordinating multiple agents.
-
-## Table of Contents
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [API](#api)
-- [Deployment](#deployment)
-- [Scripts](#scripts)
-- [Development](#development)
-- [Testing](#testing)
-- [Roadmap](#roadmap)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Security](#security)
-- [License](#license)
-
-## Overview
-The IAC Bus provides a small HTTP API for posting and polling messages between
-agents. Messages are stored in memory with retention limits to keep the service
-simple to deploy and restart.
+Lightweight message bus for coordinating multiple agents over HTTP.
 
 ## Features
 - Simple REST endpoints for posting and polling messages
-- In-memory retention with size and time limits
-- Optional bearer-token authentication
-- Systemd deployment via `deploy.sh`
-- Utility scripts for hotfixes and agent lifecycle
+- In-memory retention with size + time limits
+- Queue-style work leasing (claim/ack/nack)
+- Optional bearer-token auth
+- Systemd service deployment
 
-## Architecture
-- Single-process, in-memory message store
-- Automatic pruning by age and max message count
-- Health endpoint without authentication
+## Endpoints
 
-## Quick Start
+### Post message
 ```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+curl -X POST http://<BUS_IP>:8091/bus/messages \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"ops","sender":"agent-a","message":"ready"}'
 ```
 
-## Configuration
+### Poll messages
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Use `since_id` to avoid re-reading older messages:
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Queue messages are excluded from polling by default. To include them:
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?include_queue=true" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+### Claim from queue (work leasing)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/claim \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","lease_seconds":60}'
+```
+
+### Ack queue message
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/ack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>"}'
+```
+
+### Nack queue message (requeue)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>","requeue":true}'
+```
+
+### Health check
+```bash
+curl http://<BUS_IP>:8091/health
+```
+
+## Environment
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -52,17 +75,17 @@ BUS_API_TOKEN=devtoken ./venv/bin/python server.py
 | `BUS_API_TOKEN` | empty | Bearer token |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
+| `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 
-## API
-Endpoints:
-- `POST /bus/messages`
-- `GET /bus/messages`
-- `GET /health`
+## Local Run
+```bash
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+```
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for request and response details.
-
-## Deployment
+## Deploy (systemd)
 ```bash
 sudo ./deploy.sh
 sudo systemctl status iac-bus.service
@@ -71,17 +94,107 @@ sudo systemctl status iac-bus.service
 The deploy script installs to `/opt/iac-bus` and creates
 `/etc/iac-bus/iac-bus.env` for configuration.
 
-## Scripts
-- `scripts/hotfix-pull.sh` applies a hotfix from GitHub on a VM.
-- `scripts/hotfix-remote.sh` applies a hotfix over SSH from your machine.
-- `scripts/spawn-cursor-agents.py` spawns Cursor agents and announces them on the bus.
-- `scripts/handoff-terminate-agents.py` terminates Cursor agents by ID, file, or bus.
+## OCI Deployment
 
-Examples:
+See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
+
+## Protocol Schema
+
+JSON schema definitions for the message protocol and queue endpoints live in
+`schemas/iac-bus.schema.json`.
+
+Protocol v1.1 adds orchestration message types:
+- `orchestration.job`
+- `orchestration.step.assign`
+- `orchestration.step.status`
+
+## Universal Agent Contract
+
+Define shared agent behavior, actions, states, and control inputs with a
+portable envelope plus adapter interfaces:
+
+- Schema: `schemas/agent-contract.schema.json`
+- Python interface + marshalling helpers: `agent_contract.py`
+
+### Oversight / adjudication flow
+
+Subordinate requests a decision from the supervisor (with options):
+```json
+{
+  "kind": "control",
+  "action": "request_decision",
+  "from": "agent-2",
+  "to": "supervisor-1",
+  "conversation_id": "conv-99",
+  "state": "waiting_input",
+  "payload": {
+    "prompt": "Proceed with deploy?",
+    "choices": [
+      {"id": "continue", "label": "Continue"},
+      {"id": "pause", "label": "Pause and review"},
+      {"id": "abort", "label": "Abort"}
+    ],
+    "requires_approval": true,
+    "escalation_chain": ["supervisor-1", "user"]
+  }
+}
+```
+
+Supervisor responds (allowing the agent to continue):
+```json
+{
+  "kind": "response",
+  "action": "provide_decision",
+  "from": "supervisor-1",
+  "to": "agent-2",
+  "conversation_id": "conv-99",
+  "payload": {
+    "choice_id": "continue",
+    "approved": true,
+    "notes": "Proceed"
+  }
+}
+```
+
+## Orchestration Jobs (dependencies + sync)
+
+Define job/step graphs with dependencies, time gates, and barrier sync points:
+
+- Schema: `schemas/orchestration.schema.json`
+- Python helper (ready-step evaluation): `orchestration.py`
+
+Example:
+```json
+{
+  "job_id": "job-1",
+  "name": "build-service",
+  "steps": [
+    {"id": "design"},
+    {"id": "impl", "depends_on": [{"step_id": "design"}]},
+    {"id": "tests", "depends_on": [{"step_id": "impl"}]},
+    {"id": "review", "wait_for": ["sync-1"]}
+  ],
+  "barriers": [
+    {"id": "sync-1", "requires": ["design", "impl", "tests"], "mode": "all_completed"}
+  ]
+}
+```
+
+## Hotfix (no OCI credentials)
+
+Apply a hotfix directly on a VM by pulling a tarball from GitHub:
 ```bash
 sudo ./scripts/hotfix-pull.sh
+```
+
+Apply to a remote VM over SSH (from your local machine):
+```bash
 ./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
 ```
+
+## Spawn Cursor Agents + Bus Announce
+
+This script spawns Cursor Cloud Agents and announces each agent on the bus.
 
 ```bash
 export CURSOR_API_KEY="key_xxx..."
@@ -93,37 +206,47 @@ python3 scripts/spawn-cursor-agents.py \
   --bus-token "$BUS_API_TOKEN"
 ```
 
-## Development
+Notes:
+- Cursor uses **Basic Auth** with the key as the username and a blank password.
+- `--payload` is passed directly to the Cursor API and can include custom fields.
+
+## Handoff: Terminate Cursor Agents
+
+Terminate agents explicitly by ID:
 ```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+export CURSOR_API_KEY="key_xxx..."
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids "agent-id-1,agent-id-2"
 ```
 
-## Testing
+Or extract IDs from a handoff notes file:
 ```bash
-./venv/bin/pytest
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids-file /path/to/redroid-cloud-phone_notes.md
 ```
 
-## Roadmap
-- Identity and presence tracking
-- Roles and hierarchy for supervisor/subordinate agents
-- Directed routing and group addressing
-- Work leasing and acknowledgements
-- Conversation threads
-- Access control and channel ACLs
-- Optional persistence (SQLite/Postgres/Redis)
-- Streaming (SSE or WebSocket)
-- Rate limiting
+Or terminate agents announced on the bus:
+```bash
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN"
+```
 
-## Documentation
-Detailed documentation lives in [DOCUMENTATION.md](DOCUMENTATION.md).
+## Topology Roadmap (Supervisor/Subordinate)
 
-## Contributing
-Open an issue or submit a pull request. Please include tests for new behavior.
+The current bus is a simple channel-based relay. To support supervisor and
+subordinate agent topologies, the following functionality should be added:
 
-## Security
-If you expose the bus publicly, configure `BUS_API_TOKEN` and run behind TLS
-or a trusted network boundary.
-
-## License
-No license file is present. Add a LICENSE file to define usage terms.
+- **Identity & presence**: register agents, heartbeat TTL, and last-seen status.
+- **Roles & hierarchy**: supervisor/subordinate roles with parent-child links.
+- **Directed routing**: direct messages to agent IDs (not only channels).
+- **Group addressing**: supervisor can broadcast to all descendants.
+- **Work leasing**: supervisor assigns tasks with lease + ack/complete flow.
+- **Conversation threads**: correlate messages by `conversation_id`.
+- **Access control**: role-based permissions and channel ACLs.
+- **Durability**: optional persistent storage (SQLite/Postgres/Redis).
+- **Streaming**: SSE or WebSocket long-poll for low-latency updates.
+- **Rate limits**: per-agent and per-channel throttling.

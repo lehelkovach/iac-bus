@@ -55,3 +55,88 @@ def test_since_id_filters(monkeypatch):
     data = resp.get_json()
     assert len(data["messages"]) == 1
     assert data["messages"][0]["message"] == "two"
+
+
+def test_queue_claim_and_ack(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    resp = client.post(
+        "/bus/messages",
+        json={"queue": "work", "sender": "lead", "message": {"task": "a"}}
+    )
+    msg_id = resp.get_json()["message"]["id"]
+
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a", "lease_seconds": 30}
+    )
+    assert claim.status_code == 200
+    claimed = claim.get_json()["message"]
+    assert claimed["id"] == msg_id
+    assert claimed["status"] == "leased"
+    lease_id = claimed["lease_id"]
+    assert lease_id
+
+    ack = client.post(
+        "/bus/queues/ack",
+        json={
+            "queue": "work",
+            "message_id": msg_id,
+            "worker": "agent-a",
+            "lease_id": lease_id,
+        },
+    )
+    assert ack.status_code == 200
+
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a"},
+    )
+    assert claim.status_code == 204
+
+
+def test_queue_lease_expires(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    now = {"t": 1000}
+    monkeypatch.setattr(server.time, "time", lambda: now["t"])
+
+    client.post("/bus/messages", json={"queue": "work", "message": "task"})
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a", "lease_seconds": 5},
+    )
+    first = claim.get_json()["message"]
+    first_lease_id = first["lease_id"]
+
+    now["t"] = 1010
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-b", "lease_seconds": 5},
+    )
+    assert claim.status_code == 200
+    second = claim.get_json()["message"]
+    assert second["leased_by"] == "agent-b"
+    assert second["lease_id"] != first_lease_id
+
+
+def test_poll_excludes_queue_by_default(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    client.post("/bus/messages", json={"message": "broadcast"})
+    client.post("/bus/messages", json={"queue": "work", "message": "task"})
+
+    resp = client.get("/bus/messages")
+    data = resp.get_json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["message"] == "broadcast"
+
+    resp = client.get("/bus/messages?include_queue=true")
+    data = resp.get_json()
+    assert len(data["messages"]) == 2

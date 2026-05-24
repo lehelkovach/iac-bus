@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iac-bus.local/schemas/orchestration.schema.json",
+  "title": "IAC Orchestration Job Schema",
+  "type": "object",
+  "description": "Job and step definitions with dependencies, time gates, and barriers.",
+  "$defs": {
+    "Dependency": {
+      "type": "object",
+      "required": [
+        "step_id"
+      ],
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "min_delay_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "BarrierMode": {
+      "type": "string",
+      "enum": [
+        "all_completed",
+        "all_terminal"
+      ]
+    },
+    "BarrierSpec": {
+      "type": "object",
+      "required": [
+        "id",
+        "requires"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/BarrierMode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "StepSpec": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Dependency"
+          }
+        },
+        "wait_for": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_before_ts": {
+          "type": "number"
+        },
+        "deadline_ts": {
+          "type": "number"
+        },
+        "parallel_group": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "job_id",
+    "steps"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "number"
+    },
+    "deadline_ts": {
+      "type": "number"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StepSpec"
+      }
+    },
+    "barriers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BarrierSpec"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}
