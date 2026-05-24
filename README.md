@@ -250,3 +250,12 @@ subordinate agent topologies, the following functionality should be added:
 - **Durability**: optional persistent storage (SQLite/Postgres/Redis).
 - **Streaming**: SSE or WebSocket long-poll for low-latency updates.
 - **Rate limits**: per-agent and per-channel throttling.
+
+## Planning and Scaffolding
+
+Implementation planning and execution scaffolding are documented in:
+
+- [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
+- [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.
+- [prompts/README.md](prompts/README.md) - agent prompt file conventions and usage.
