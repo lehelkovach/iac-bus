@@ -340,6 +340,8 @@ Ordered for earliest value with low rework:
 - OPA: externalized policy decisions
 
 ## 10) Planning Artifacts Map
+- Protocol contract (draft): `docs/ACP_PROTOCOL_V2.md`
+- SQL backend contract (draft): `docs/sql/ACP_V2_SCHEMA.sql`
 - Canonical execution plan: `docs/FULL_DEV_PLAN.md` (this file)
 - ACP strategy baseline: `docs/ACP_DEV_PLAN.md`
 - Version roadmap: `docs/ROADMAP.md`

@@ -66,6 +66,10 @@ Bus-core non-goals:
 - CPMS affordance matching logic
 - repo-specific business rules
 
+Protocol/data contract references:
+- `docs/ACP_PROTOCOL_V2.md`
+- `docs/sql/ACP_V2_SCHEMA.sql`
+
 ## Current Baseline (as of master)
 - Flask HTTP bus with post/poll endpoints
 - in-memory message retention limits
