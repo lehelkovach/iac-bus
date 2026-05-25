@@ -27,6 +27,45 @@ IAC-Bus is not:
 - generic team chat replacement,
 - or "Slack for agents."
 
+## Generic Pivot Profile (OSL/OpenClaw-Compatible)
+IAC-Bus must remain generic and application-agnostic for the OSL/OpenClaw pivot.
+
+Required minimum coordination capabilities:
+
+- status/progress updates,
+- blocker signaling,
+- cross-repo requests and responses,
+- handoff and completion notices,
+- optional Slack mirroring for human visibility,
+- lightweight polling/long-poll synchronization.
+
+Required generic message types:
+- `info`, `progress`, `request`, `response`, `blocker`, `handoff`, `done`,
+  `decision`, `heartbeat`, `error`
+
+Required channel conventions:
+- `ops`
+- `project.<project-name>`
+- `repo.<repo-name>`
+- `task.<task-id>`
+- `agent.<agent-id>`
+- `handoff`
+- `blockers`
+
+Required envelope fields:
+- required: `channel`, `agent`, `type`, `message`
+- optional: `ref`, `metadata`
+
+API requirements to include in MVP plan:
+- `POST /bus/messages`
+- `GET /bus/messages` with `channel`, `since_id`, `limit`, `wait_seconds`
+
+Bus-core non-goals:
+- KSG-specific storage or semantics
+- OpenClaw runtime execution logic
+- CPMS affordance matching logic
+- repo-specific business rules
+
 ## Current Baseline (as of master)
 - Flask HTTP bus with post/poll endpoints
 - in-memory message retention limits
@@ -74,6 +113,15 @@ MVP proves coordination drift mitigation end-to-end.
 6. **Locking API for repo-critical resources**
    - lease-based path locks
    - fencing token to prevent stale writers
+7. **Generic coordination profile**
+   - required message type taxonomy
+   - channel naming convention support
+   - long-poll reads via `wait_seconds`
+   - canonical client examples for post/read/wait
+8. **Optional Slack bridge**
+   - channel polling with type filters
+   - dry-run mode
+   - secret-safe posting behavior
 
 ## Data Model (MVP)
 Use minimal but explicit entities.

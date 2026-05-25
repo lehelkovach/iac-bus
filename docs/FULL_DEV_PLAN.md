@@ -15,6 +15,29 @@ This plan consolidates:
 Goal: provide one practical, execution-ready plan from current codebase state to
 an MVP that mitigates coordination drift in multi-agent, multi-repo workflows.
 
+## 1.1) OSL/OpenClaw Pivot Constraints (Generic Bus Mode)
+For the OSL/OpenClaw + procedural-agent pivot, IAC-Bus must remain
+application-agnostic.
+
+IAC-Bus should not embed KSG-, OpenClaw-, CPMS-, or repo-specific business
+logic. These systems are downstream consumers or adjacent layers.
+
+Layer separation:
+
+- IAC Bus: generic coordination/event stream
+- KSG: semantic memory/procedures/evidence
+- OpenClaw: runtime and tool execution
+- CPMS: affordance matching and UI prototype interpretation
+- Slack: human notification surface
+- GitHub: source, branches, PR workflow
+
+Non-goals for this pivot profile:
+- full workflow engine
+- complex scheduler semantics beyond lightweight queue + polling
+- semantic memory in bus core
+- KSG-specific storage contracts in bus core
+- OpenClaw execution logic in bus core
+
 ## 2) Current Baseline (Code-Verified)
 Implemented today (runtime and tests):
 
@@ -35,6 +58,59 @@ Implemented today (runtime and tests):
   - job state introspection endpoints
 - protocol schemas and orchestration schemas in `schemas/`
 - test coverage for auth, queue leasing, schema validation, and orchestration
+
+## 2.1) Minimum Generic Coordination Profile (Required)
+To support the pivot without coupling IAC-Bus to a specific application stack,
+the following capability profile is required.
+
+Required generic message types:
+
+- `info`
+- `progress`
+- `request`
+- `response`
+- `blocker`
+- `handoff`
+- `done`
+- `decision`
+- `heartbeat`
+- `error`
+
+Required channel naming conventions:
+
+- `ops`
+- `project.<project-name>`
+- `repo.<repo-name>`
+- `task.<task-id>`
+- `agent.<agent-id>`
+- `handoff`
+- `blockers`
+
+Required message envelope (generic):
+
+- required top-level: `channel`, `agent`, `type`, `message`
+- optional top-level: `ref`, `metadata`
+
+Compatibility note:
+- current runtime uses `sender`; v0.1 protocol hardening should accept/emit
+  `agent` as canonical while preserving compatibility with `sender` during
+  transition.
+
+Read API requirements:
+- `GET /bus/messages` supports: `channel`, `since_id`, `limit`, `wait_seconds`
+- long-poll behavior with `wait_seconds` for lightweight worker synchronization
+
+CLI/script requirements:
+- canonical examples for post/read/wait behaviors under repository-owned client
+  helpers (not external project wrappers only)
+
+Slack bridge requirements (optional component, not bus-core coupling):
+- poll one or more bus channels
+- post selected messages to Slack webhook
+- filter noisy events by type
+- support dry-run mode
+- never post secrets
+- default posted types: `blocker`, `handoff`, `done`, `decision`, `error`
 
 ## 3) Product Direction (Positioning)
 IAC-Bus is:
@@ -80,6 +156,14 @@ Deliverables:
   - `event_id`, `correlation_id`, `parent_event_id`
   - `actor_type`, `actor_id`, `source_medium`, `action_type`
   - `repo`, `branch`, `payload`
+- include required generic coordination fields:
+  - `channel`, `agent`, `type`, `message`
+  - optional `ref`, `metadata`
+- define message-type taxonomy and validation for:
+  - `info`, `progress`, `request`, `response`, `blocker`, `handoff`, `done`,
+    `decision`, `heartbeat`, `error`
+- define and document channel naming conventions:
+  - `ops`, `project.*`, `repo.*`, `task.*`, `agent.*`, `handoff`, `blockers`
 - add protocol version and compatibility notes
 - ensure schemas validate all public request/response surfaces
 
@@ -174,6 +258,11 @@ Deliverables:
 - SSE (first) and optional WebSocket
 - medium-aware routing/filtering
 - bridge adapter pattern for external channels
+- optional Slack webhook bridge:
+  - channel polling
+  - type filtering
+  - dry-run mode
+  - secret redaction/no-secret-post policy
 
 Exit criteria:
 - ordering, dedupe, and delivery behavior validated
@@ -198,6 +287,11 @@ Required MVP capabilities:
 - propagation engine
 - provenance query support
 - lease-based locking for critical paths
+- generic coordination profile support:
+  - required message types
+  - required channel conventions
+  - `wait_seconds` long-poll reads
+  - canonical bus client examples (post/read/wait)
 
 Required MVP scenario:
 1. upstream contract/task change emitted
@@ -232,7 +326,10 @@ Ordered for earliest value with low rework:
 7. Implement dependency impact resolver (first deterministic rule set).
 8. Add provenance query endpoint for cause-chain retrieval.
 9. Add lock API primitives with lease/fencing semantics.
-10. Add BDD scenarios for invalidation + lock contention + recovery.
+10. Add long-poll support via `wait_seconds` on reads.
+11. Add canonical CLI/script examples for post/read/wait.
+12. Add optional Slack bridge with dry-run and type filters.
+13. Add BDD scenarios for invalidation + lock contention + recovery + handoff.
 
 ## 9) Standards and OSS Patterns to Continue Reusing
 - CloudEvents: event metadata consistency

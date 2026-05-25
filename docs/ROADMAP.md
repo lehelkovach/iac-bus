@@ -13,11 +13,21 @@ Primary outcome: demonstrate coordination drift mitigation.
 - dependency impact propagation
 - provenance query endpoint
 - lease-based lock API for repo/path critical sections
+- generic message type taxonomy:
+  - `info`, `progress`, `request`, `response`, `blocker`, `handoff`, `done`,
+    `decision`, `heartbeat`, `error`
+- generic channel conventions:
+  - `ops`, `project.*`, `repo.*`, `task.*`, `agent.*`, `handoff`, `blockers`
+- long-poll support using `wait_seconds` on message reads
+- canonical client examples/helpers for post/read/wait usage
+- optional Slack bridge MVP with dry-run mode and type filtering
 
 ### Exit Criteria
 - end-to-end invalidation demo passes automated tests
 - provenance can answer "what caused this blocker?"
 - lock semantics validated under concurrent worker simulation
+- long-poll behavior validated with `wait_seconds` integration tests
+- handoff/blocker/done/decision/error Slack formatting validated in dry-run tests
 
 ## v0.2 - Reliability and Throughput
 Primary outcome: dependable operations under higher load.
@@ -28,6 +38,10 @@ Primary outcome: dependable operations under higher load.
 - idempotency keys for write endpoints
 - consumer checkpointing for replay/resume
 - structured metrics and tracing
+- Slack bridge hardening:
+  - multi-channel polling controls
+  - configurable type filtering and backoff
+  - operational safeguards against noisy floods
 
 ### Exit Criteria
 - soak tests pass with no coordination state corruption
