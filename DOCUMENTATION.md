@@ -173,6 +173,9 @@ BUS_API_TOKEN=devtoken ./venv/bin/gunicorn -b 0.0.0.0:8091 server:app
 ## Planning Artifacts
 The repository includes a planning/scaffolding set for ACP evolution:
 
+- `docs/ACP_PROTOCOL_V2.md` - strict ACP v2 draft protocol contract (identity, messages, channels, endpoints, state semantics).
+- `docs/sql/ACP_V2_SCHEMA.sql` - draft Postgres schema for durable message routing history and agent coordination state.
+- `docs/FULL_DEV_PLAN.md` - canonical full development plan combining merged PR intent and ACP roadmap strategy.
 - `docs/ACP_DEV_PLAN.md` - consolidated MVP-first architecture and delivery plan.
 - `docs/ROADMAP.md` - versioned roadmap from foundational to advanced capabilities.
 - `docs/TESTING_STRATEGY.md` - TDD/BDD cascading gates and definition of done.
