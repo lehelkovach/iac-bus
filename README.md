@@ -255,6 +255,7 @@ subordinate agent topologies, the following functionality should be added:
 
 Implementation planning and execution scaffolding are documented in:
 
+- [docs/FULL_DEV_PLAN.md](docs/FULL_DEV_PLAN.md) - canonical full development plan assimilating merged PR intent and ACP planning.
 - [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
 - [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
 - [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.
