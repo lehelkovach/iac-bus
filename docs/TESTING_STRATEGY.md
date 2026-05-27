@@ -47,6 +47,19 @@ Purpose: stress coordination reliability.
 - duplicate event delivery and retry semantics
 - restart and replay recovery tests
 
+## Pivot Minimum Test Matrix (OSL/OpenClaw-Compatible)
+In addition to existing layered tests, the following minimum integration checks
+must be present for the generic coordination profile:
+
+1. post a message with valid bearer token
+2. reject message post without valid token
+3. read by channel filter
+4. read with `since_id`
+5. long-poll read with `wait_seconds`
+6. invalid `limit` and malformed input handling
+7. Slack bridge formatting in dry-run mode
+8. handoff metadata preservation end-to-end
+
 ## BDD Conventions
 Use Gherkin feature files with explicit Given/When/Then semantics.
 
@@ -94,3 +107,6 @@ A feature is "done" only when:
 3. Lock acquire/renew/release with lease expiry takeover
 4. Unauthorized action rejection by role policy
 5. Restart recovery preserves causal provenance chain
+6. Message taxonomy validation for required generic `type` values
+7. Channel convention conformance for `project.*`, `repo.*`, `task.*`, `agent.*`
+8. Slack dry-run emission for blocker/handoff/done/decision/error
