@@ -22,6 +22,9 @@ The Inter-Agent Communication Bus (IAC Bus) is a small Flask application that
 accepts messages over HTTP and keeps them in memory. It is designed for quick,
 lightweight coordination between agents without requiring external storage.
 
+For role-oriented operational usage (master/slave/sibling collaboration
+playbook), see the "Agent Collaboration Guide" section in `README.md`.
+
 ## Feature Status Labels
 This document uses explicit status labels:
 
