@@ -129,6 +129,36 @@ ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
 Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
 and the service auto-restarts on file changes via `watchmedo`.
 
+### Provision a brand-new OCI VM using `OCI_*` secrets
+
+Use the workflow `.github/workflows/oci-provision-dev-vm.yml` (manual
+workflow_dispatch) or run locally:
+
+```bash
+python3 -m pip install oci
+python3 scripts/provision-oci-dev-vm.py
+```
+
+Required `OCI_*` secrets:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one of:
+  - `OCI_PRIVATE_KEY`
+  - `OCI_PRIVATE_KEY_B64`
+
+Optional:
+- `OCI_AVAILABILITY_DOMAIN`
+- `OCI_SHAPE`
+- `OCI_VM_DISPLAY_NAME`
+- `OCI_BOOT_VOLUME_SIZE_GBS`
+- `OCI_RUN_DEPLOY_AFTER_CREATE=true` (will trigger `scripts/deploy-dev-vm.sh`)
+
 ## Protocol Schema
 
 JSON schema definitions for the message protocol and queue endpoints live in

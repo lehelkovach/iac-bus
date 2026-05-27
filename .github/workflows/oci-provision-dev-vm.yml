@@ -1,0 +1,62 @@
+name: oci-provision-dev-vm
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_deploy_after_create:
+        description: "Run scripts/deploy-dev-vm.sh after VM is created"
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      vm_display_name:
+        description: "Display name for the new OCI VM"
+        required: false
+        default: "iac-bus-dev-vm"
+        type: string
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt oci
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Provision OCI VM
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_PRIVATE_KEY_B64: ${{ secrets.OCI_PRIVATE_KEY_B64 }}
+          OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          OCI_SUBNET_OCID: ${{ secrets.OCI_SUBNET_OCID }}
+          OCI_IMAGE_OCID: ${{ secrets.OCI_IMAGE_OCID }}
+          OCI_AVAILABILITY_DOMAIN: ${{ secrets.OCI_AVAILABILITY_DOMAIN }}
+          OCI_SHAPE: ${{ secrets.OCI_SHAPE }}
+          OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          OCI_VM_DISPLAY_NAME: ${{ inputs.vm_display_name }}
+          OCI_ASSIGN_PUBLIC_IP: "true"
+          OCI_RUN_DEPLOY_AFTER_CREATE: ${{ inputs.run_deploy_after_create }}
+          KSG_DEV_VM_USER: ${{ secrets.KSG_DEV_VM_USER }}
+          KSG_DEV_VM_PORT: ${{ secrets.KSG_DEV_VM_PORT }}
+          KSG_DEV_VM_APP_DIR: ${{ secrets.KSG_DEV_VM_APP_DIR }}
+          KSG_DEV_VM_KEY: ${{ secrets.KSG_DEV_VM_KEY }}
+          BUS_API_TOKEN: ${{ secrets.BUS_API_TOKEN }}
+        run: |
+          chmod +x scripts/deploy-dev-vm.sh
+          python3 scripts/provision-oci-dev-vm.py

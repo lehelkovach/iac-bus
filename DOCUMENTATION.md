@@ -165,6 +165,26 @@ The repository includes `gunicorn` in `requirements.txt`. You can run:
 BUS_API_TOKEN=devtoken ./venv/bin/gunicorn -b 0.0.0.0:8091 server:app
 ```
 
+### Provision a new OCI dev VM (using `OCI_*` secrets)
+Use:
+
+- `scripts/provision-oci-dev-vm.py` (local/manual)
+- `.github/workflows/oci-provision-dev-vm.yml` (workflow_dispatch in GitHub)
+
+Required `OCI_*` values:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one private key source (`OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`)
+
+The provisioning script prints the new VM host and can optionally trigger
+deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
+
 ## Operations
 - Logs are emitted to stdout using the configured `BUS_LOG_LEVEL`.
 - The systemd unit restarts on failure.
