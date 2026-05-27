@@ -98,6 +98,37 @@ The deploy script installs to `/opt/iac-bus` and creates
 
 See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
 
+## Dev VM CI/CD (Oracle Cloud)
+
+For autonomous dev deployments with hot reload and debug logs, use:
+
+- `scripts/deploy-dev-vm.sh` (manual/local deployment using injected secrets)
+- `.github/workflows/dev-deploy.yml` (test + deploy on push)
+- `systemd/iac-bus-dev.service` + `scripts/run-dev-hot-reload.sh` (live reload)
+
+Expected secret/environment inputs:
+
+- `KSG_DEV_VM_HOST`
+- `KSG_DEV_VM_USER`
+- `KSG_DEV_VM_PORT` (optional, default `22`)
+- `KSG_DEV_VM_APP_DIR` (optional, default `/opt/iac-bus-dev`)
+- `KSG_DEV_VM_KEY` (private key content or file path)
+- `BUS_API_TOKEN` (optional, for protected dev API)
+
+Manual deploy:
+```bash
+chmod +x scripts/deploy-dev-vm.sh
+./scripts/deploy-dev-vm.sh
+```
+
+Live debugging logs on dev VM:
+```bash
+ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+```
+
+Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
+and the service auto-restarts on file changes via `watchmedo`.
+
 ## Protocol Schema
 
 JSON schema definitions for the message protocol and queue endpoints live in
@@ -190,6 +221,11 @@ sudo ./scripts/hotfix-pull.sh
 Apply to a remote VM over SSH (from your local machine):
 ```bash
 ./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
+```
+
+Deploy and configure the Oracle dev VM with hot-reload service:
+```bash
+./scripts/deploy-dev-vm.sh
 ```
 
 ## Spawn Cursor Agents + Bus Announce
