@@ -125,6 +125,10 @@ Authorization: Bearer <BUS_API_TOKEN>
 #### POST `/agents/register`
 Registers an agent identity and returns canonical IDs/handles.
 
+Contract intent:
+- idempotent registration for the same logical agent identity
+- deterministic conflict handling for incompatible re-registration attempts
+
 Request:
 ```json
 {
@@ -138,17 +142,105 @@ Request:
 }
 ```
 
-Response `201`:
+Field requirements:
+- required: `brand`, `repo_locale`, `ordinal_path`, `role`, `medium`
+- optional: `parent_agent_uuid`, `session_id`
+- normalization:
+  - trim and lowercase `brand`, `repo_locale`, `role`, `medium`
+  - preserve `ordinal_path` shape after validation
+- validations:
+  - `ordinal_path` must match `^([0-9]+)(-[0-9]+)*$`
+  - if `ordinal_path != "0"`, `parent_agent_uuid` should be provided
+  - `medium` must be one of `web`, `slack`, `ide`, `api`, `automation`, `other`
+
+Derived values:
+- `logical_handle = agent:<brand>.<repo_locale>.<ordinal_path>`
+- `endpoint_handle = <logical_handle>@<medium>`
+
+Response `201 Created` (new agent):
 ```json
 {
   "agent_uuid": "uuid",
   "logical_handle": "agent:cursor.repo-x.0-1",
-  "endpoint_handle": "agent:cursor.repo-x.0-1@web"
+  "endpoint_handle": "agent:cursor.repo-x.0-1@web",
+  "created": true
 }
 ```
 
+Response `200 OK` (idempotent existing agent):
+```json
+{
+  "agent_uuid": "uuid",
+  "logical_handle": "agent:cursor.repo-x.0-1",
+  "endpoint_handle": "agent:cursor.repo-x.0-1@web",
+  "created": false
+}
+```
+
+Response `400 Bad Request` (validation failure):
+```json
+{
+  "error": "invalid register payload",
+  "details": [
+    "ordinal_path must match ^([0-9]+)(-[0-9]+)*$"
+  ]
+}
+```
+
+Response `404 Not Found` (explicit parent provided but missing):
+```json
+{
+  "error": "parent agent not found"
+}
+```
+
+Response `409 Conflict` (logical identity mismatch):
+```json
+{
+  "error": "agent registration conflict",
+  "conflict_code": "HANDLE_PARENT_MISMATCH",
+  "existing_agent_uuid": "uuid"
+}
+```
+
+Response `401 Unauthorized`:
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+#### `/agents/register` Conflict Matrix
+
+| Scenario | Expected status | Behavior |
+| --- | --- | --- |
+| First registration for handle | `201` | Create `agents` row and endpoint row |
+| Same handle, same parent/role/repo/brand, same medium/session | `200` | Return existing UUID (idempotent) |
+| Same handle, same logical identity, new medium/session | `200` | Reuse UUID, create/update endpoint row |
+| Same handle, different `parent_agent_uuid` | `409` | Reject conflict (`HANDLE_PARENT_MISMATCH`) |
+| Same handle, different brand/repo/ordinal derivation | `409` | Reject conflict (`HANDLE_IDENTITY_MISMATCH`) |
+| Non-master ordinal with missing parent | `400` | Reject invalid hierarchy payload |
+| Provided parent UUID does not exist | `404` | Reject unresolved parent reference |
+
 #### POST `/agents/heartbeat`
 Updates endpoint liveness.
+
+Request:
+```json
+{
+  "agent_uuid": "uuid",
+  "medium": "web",
+  "session_id": "optional-session"
+}
+```
+
+Response `200`:
+```json
+{
+  "success": true,
+  "last_seen_at": "2026-05-27T03:00:00Z"
+}
+```
 
 ### 4.2 Message write endpoint
 
