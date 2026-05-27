@@ -13,6 +13,14 @@ Use readable handles mapped to immutable UUIDs.
 - `orchestrator.prompt.md` - parent/supervisor agent behavior
 - `worker.prompt.md` - execution-focused subordinate behavior
 - `reviewer.prompt.md` - verification and quality gate behavior
+- `REPO_AGENT_TAKEOVER.prompt.md` - **first-read takeover prompt for any agent continuing repo work**
+
+## Mandatory takeover sequence
+Any new agent taking over work should read in this order:
+
+1. `prompts/REPO_AGENT_TAKEOVER.prompt.md`
+2. `docs/AGENT_TASKS.md`
+3. then continue implementation from the top pending task
 
 ## Required Prompt Header Fields
 Every prompt file should define:
