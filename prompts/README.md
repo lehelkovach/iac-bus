@@ -19,8 +19,9 @@ Use readable handles mapped to immutable UUIDs.
 Any new agent taking over work should read in this order:
 
 1. `prompts/REPO_AGENT_TAKEOVER.prompt.md`
-2. `docs/AGENT_TASKS.md`
-3. then continue implementation from the top pending task
+2. review recent PR/branch history (as required in takeover prompt)
+3. `docs/AGENT_TASKS.md`
+4. then continue implementation from the top pending task
 
 ## Required Prompt Header Fields
 Every prompt file should define:

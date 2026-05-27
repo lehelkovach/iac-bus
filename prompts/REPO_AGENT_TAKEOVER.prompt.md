@@ -18,6 +18,25 @@ execution from the latest documented state.
 4. `docs/TESTING_STRATEGY.md`
 5. `docs/AGENT_TASKS.md` (canonical active task queue)
 
+## Required Branch/PR Review (before execution)
+Before writing code or running deployments, review what was already completed in
+recent branches and pull requests.
+
+Minimum review checklist:
+1. list open and recent merged PRs
+2. inspect changed files and PR descriptions for active branch context
+3. list local and remote branches
+4. confirm whether current branch is ahead/behind master
+5. update `docs/AGENT_TASKS.md` if discovered work changes priority/order
+
+Suggested commands:
+- `gh pr list --state open --limit 20`
+- `gh pr list --state merged --limit 20`
+- `gh pr view <number> --json title,body,files,headRefName,baseRefName`
+- `git branch -a`
+- `git status --short --branch`
+- `git log --oneline --decorate -n 20`
+
 ## Required Secret Check (before execution)
 Check whether all required deployment/provisioning secrets are injected in the
 current runtime environment.
