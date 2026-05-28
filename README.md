@@ -98,6 +98,67 @@ The deploy script installs to `/opt/iac-bus` and creates
 
 See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
 
+## Dev VM CI/CD (Oracle Cloud)
+
+For autonomous dev deployments with hot reload and debug logs, use:
+
+- `scripts/deploy-dev-vm.sh` (manual/local deployment using injected secrets)
+- `.github/workflows/dev-deploy.yml` (test + deploy on push)
+- `systemd/iac-bus-dev.service` + `scripts/run-dev-hot-reload.sh` (live reload)
+
+Expected secret/environment inputs:
+
+- `KSG_DEV_VM_HOST`
+- `KSG_DEV_VM_USER`
+- `KSG_DEV_VM_PORT` (optional, default `22`)
+- `KSG_DEV_VM_APP_DIR` (optional, default `/opt/iac-bus-dev`)
+- `KSG_DEV_VM_KEY` (private key content or file path)
+- `BUS_API_TOKEN` (optional, for protected dev API)
+
+Manual deploy:
+```bash
+chmod +x scripts/deploy-dev-vm.sh
+./scripts/deploy-dev-vm.sh
+```
+
+Live debugging logs on dev VM:
+```bash
+ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+```
+
+Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
+and the service auto-restarts on file changes via `watchmedo`.
+
+### Provision a brand-new OCI VM using `OCI_*` secrets
+
+Use the workflow `.github/workflows/oci-provision-dev-vm.yml` (manual
+workflow_dispatch) or run locally:
+
+```bash
+python3 -m pip install oci
+python3 scripts/provision-oci-dev-vm.py
+```
+
+Required `OCI_*` secrets:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one of:
+  - `OCI_PRIVATE_KEY`
+  - `OCI_PRIVATE_KEY_B64`
+
+Optional:
+- `OCI_AVAILABILITY_DOMAIN`
+- `OCI_SHAPE`
+- `OCI_VM_DISPLAY_NAME`
+- `OCI_BOOT_VOLUME_SIZE_GBS`
+- `OCI_RUN_DEPLOY_AFTER_CREATE=true` (will trigger `scripts/deploy-dev-vm.sh`)
+
 ## Protocol Schema
 
 JSON schema definitions for the message protocol and queue endpoints live in
@@ -180,6 +241,114 @@ Example:
 }
 ```
 
+## Agent Collaboration Guide (Master / Slave / Sibling)
+
+Use this section as the quick operational playbook for any new agent joining an
+active multi-agent task.
+
+Terminology note:
+- "Master" == supervisor/orchestrator agent.
+- "Slave" == subordinate worker agent (execution-focused child).
+- "Sibling" == another worker under the same master.
+
+### Role responsibilities
+
+| Role | Primary responsibilities | Should publish |
+| --- | --- | --- |
+| Master | assign tasks, track blockers, resolve dependencies, approve handoffs | `request`, `decision`, `handoff`, `done` |
+| Slave/Subordinate | execute scoped tasks, report progress, raise blockers, hand off finished work | `progress`, `blocker`, `handoff`, `done`, `error` |
+| Sibling worker | same as subordinate, plus explicit dependency notifications to peer workers via bus | `response`, `progress`, `done`, `blocker` |
+
+### Required message shape (ACP v2 style)
+
+At minimum, agents should send:
+- `channel`
+- `agent`
+- `type`
+- `message`
+
+Optional:
+- `ref`
+- `metadata`
+
+Reference: `docs/ACP_PROTOCOL_V2.md`
+
+### Channel conventions
+
+- `ops`
+- `project.<project-name>`
+- `repo.<repo-name>`
+- `task.<task-id>`
+- `agent.<agent-id>`
+- `handoff`
+- `blockers`
+
+### New-agent startup checklist
+
+1. Register identity (or resolve existing identity) and determine role:
+   - master / slave / sibling.
+2. Set a stable `agent` handle with medium suffix:
+   - example: `agent:cursor.iac-bus.0@web`
+3. Subscribe/poll required channels for assigned scope:
+   - at minimum task channel + `blockers` + `handoff`.
+4. Send initial heartbeat/progress message:
+   - announce active state and current task focus.
+5. Use `since_id` (and when available `wait_seconds`) to avoid missed messages.
+
+### Master delegation pattern
+
+1. Master posts task assignment to `task.<task-id>` (`type=request`).
+2. Slave accepts and posts `progress`.
+3. If blocked, slave posts `blocker` to `blockers` (with dependency details).
+4. Master either:
+   - assigns dependency work to a sibling, or
+   - posts `decision` with unblock instructions.
+5. Slave resumes, posts `done`, then posts `handoff` with tests/artifacts/next.
+
+### Sibling dependency handoff pattern (IPC-like)
+
+When worker A needs worker B:
+
+1. A posts `blocker` with `metadata.needs`.
+2. Master assigns B via `request`.
+3. B posts `done` on dependency task channel.
+4. A observes completion (poll channel with `since_id`), resumes, posts `progress`.
+
+This pattern provides OS-like "wait until dependency completes" behavior without
+tight coupling between workers.
+
+### Minimal practical examples
+
+Master assignment:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"task.login-flow","agent":"agent:cursor.iac-bus.0@web","type":"request","message":"Implement login validation","metadata":{"owner":"agent:cursor.iac-bus.0-1@web"}}'
+```
+
+Slave reports blocker:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"blockers","agent":"agent:cursor.iac-bus.0-1@web","type":"blocker","message":"Waiting for API contract update","metadata":{"needs":["OpenAPI v3 response schema"],"task":"task.login-flow"}}'
+```
+
+Sibling completion notice:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"task.api-contract","agent":"agent:cursor.iac-bus.0-2@web","type":"done","message":"API contract update completed","metadata":{"artifacts":["openapi.yaml"]}}'
+```
+
+Wait/read loop (poll with cursor):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=task.api-contract&since_id=<LAST_ID>&limit=100" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
 ## Hotfix (no OCI credentials)
 
 Apply a hotfix directly on a VM by pulling a tarball from GitHub:
@@ -190,6 +359,11 @@ sudo ./scripts/hotfix-pull.sh
 Apply to a remote VM over SSH (from your local machine):
 ```bash
 ./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
+```
+
+Deploy and configure the Oracle dev VM with hot-reload service:
+```bash
+./scripts/deploy-dev-vm.sh
 ```
 
 ## Spawn Cursor Agents + Bus Announce
@@ -257,6 +431,8 @@ Implementation planning and execution scaffolding are documented in:
 
 - [docs/ACP_PROTOCOL_V2.md](docs/ACP_PROTOCOL_V2.md) - strict ACP v2 draft protocol contract with identity, message/channel conventions, API semantics, and state diagrams.
 - [docs/sql/ACP_V2_SCHEMA.sql](docs/sql/ACP_V2_SCHEMA.sql) - draft Postgres schema for durable agent/message history and coordination state.
+- [prompts/REPO_AGENT_TAKEOVER.prompt.md](prompts/REPO_AGENT_TAKEOVER.prompt.md) - first-read takeover prompt for any new agent continuing work.
+- [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md) - canonical active task queue for takeover agents.
 - [docs/FULL_DEV_PLAN.md](docs/FULL_DEV_PLAN.md) - canonical full development plan assimilating merged PR intent and ACP planning.
 - [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
 - [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
