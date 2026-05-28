@@ -98,6 +98,67 @@ The deploy script installs to `/opt/iac-bus` and creates
 
 See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
 
+## Dev VM CI/CD (Oracle Cloud)
+
+For autonomous dev deployments with hot reload and debug logs, use:
+
+- `scripts/deploy-dev-vm.sh` (manual/local deployment using injected secrets)
+- `.github/workflows/dev-deploy.yml` (test + deploy on push)
+- `systemd/iac-bus-dev.service` + `scripts/run-dev-hot-reload.sh` (live reload)
+
+Expected secret/environment inputs:
+
+- `KSG_DEV_VM_HOST`
+- `KSG_DEV_VM_USER`
+- `KSG_DEV_VM_PORT` (optional, default `22`)
+- `KSG_DEV_VM_APP_DIR` (optional, default `/opt/iac-bus-dev`)
+- `KSG_DEV_VM_KEY` (private key content or file path)
+- `BUS_API_TOKEN` (optional, for protected dev API)
+
+Manual deploy:
+```bash
+chmod +x scripts/deploy-dev-vm.sh
+./scripts/deploy-dev-vm.sh
+```
+
+Live debugging logs on dev VM:
+```bash
+ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+```
+
+Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
+and the service auto-restarts on file changes via `watchmedo`.
+
+### Provision a brand-new OCI VM using `OCI_*` secrets
+
+Use the workflow `.github/workflows/oci-provision-dev-vm.yml` (manual
+workflow_dispatch) or run locally:
+
+```bash
+python3 -m pip install oci
+python3 scripts/provision-oci-dev-vm.py
+```
+
+Required `OCI_*` secrets:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one of:
+  - `OCI_PRIVATE_KEY`
+  - `OCI_PRIVATE_KEY_B64`
+
+Optional:
+- `OCI_AVAILABILITY_DOMAIN`
+- `OCI_SHAPE`
+- `OCI_VM_DISPLAY_NAME`
+- `OCI_BOOT_VOLUME_SIZE_GBS`
+- `OCI_RUN_DEPLOY_AFTER_CREATE=true` (will trigger `scripts/deploy-dev-vm.sh`)
+
 ## Protocol Schema
 
 JSON schema definitions for the message protocol and queue endpoints live in
@@ -192,6 +253,11 @@ Apply to a remote VM over SSH (from your local machine):
 ./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
 ```
 
+Deploy and configure the Oracle dev VM with hot-reload service:
+```bash
+./scripts/deploy-dev-vm.sh
+```
+
 ## Spawn Cursor Agents + Bus Announce
 
 This script spawns Cursor Cloud Agents and announces each agent on the bus.
@@ -257,6 +323,8 @@ Implementation planning and execution scaffolding are documented in:
 
 - [docs/ACP_PROTOCOL_V2.md](docs/ACP_PROTOCOL_V2.md) - strict ACP v2 draft protocol contract with identity, message/channel conventions, API semantics, and state diagrams.
 - [docs/sql/ACP_V2_SCHEMA.sql](docs/sql/ACP_V2_SCHEMA.sql) - draft Postgres schema for durable agent/message history and coordination state.
+- [prompts/REPO_AGENT_TAKEOVER.prompt.md](prompts/REPO_AGENT_TAKEOVER.prompt.md) - first-read takeover prompt for any new agent continuing work.
+- [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md) - canonical active task queue for takeover agents.
 - [docs/FULL_DEV_PLAN.md](docs/FULL_DEV_PLAN.md) - canonical full development plan assimilating merged PR intent and ACP planning.
 - [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
 - [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.

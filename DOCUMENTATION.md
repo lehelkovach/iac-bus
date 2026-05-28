@@ -165,10 +165,41 @@ The repository includes `gunicorn` in `requirements.txt`. You can run:
 BUS_API_TOKEN=devtoken ./venv/bin/gunicorn -b 0.0.0.0:8091 server:app
 ```
 
+### Provision a new OCI dev VM (using `OCI_*` secrets)
+Use:
+
+- `scripts/provision-oci-dev-vm.py` (local/manual)
+- `.github/workflows/oci-provision-dev-vm.yml` (workflow_dispatch in GitHub)
+
+Required `OCI_*` values:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one private key source (`OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`)
+
+The provisioning script prints the new VM host and can optionally trigger
+deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
+
 ## Operations
 - Logs are emitted to stdout using the configured `BUS_LOG_LEVEL`.
 - The systemd unit restarts on failure.
 - The service runs as `root` by default in the provided unit file.
+
+### Dev VM hot-reload operations
+- Dev service unit: `systemd/iac-bus-dev.service`
+- Hot-reload runner: `scripts/run-dev-hot-reload.sh`
+- Deployment helper: `scripts/deploy-dev-vm.sh`
+- CI/CD workflow: `.github/workflows/dev-deploy.yml`
+
+Recommended log streaming command on the VM:
+```bash
+sudo journalctl -u iac-bus-dev.service -f
+```
 
 ## Planning Artifacts
 The repository includes a planning/scaffolding set for ACP evolution:
@@ -208,6 +239,24 @@ Environment variables:
 - `REPO_OWNER` (default: `lehelkovach`)
 - `REPO_NAME` (default: `iac-bus`)
 - `REF` (default: `main`)
+
+### Dev VM deploy (Oracle)
+Sync repository contents to the configured dev VM, install dependencies, write
+dev environment configuration, and restart `iac-bus-dev.service`.
+
+```bash
+./scripts/deploy-dev-vm.sh
+```
+
+Environment variables/secrets:
+- `KSG_DEV_VM_HOST`
+- `KSG_DEV_VM_USER`
+- `KSG_DEV_VM_PORT` (default: `22`)
+- `KSG_DEV_VM_APP_DIR` (default: `/opt/iac-bus-dev`)
+- `KSG_DEV_VM_KEY` (private key content, escaped content, base64, or file path)
+- `BUS_API_TOKEN` (optional)
+- `DEV_BUS_PORT` (default: `8091`)
+- `DEV_BUS_LOG_LEVEL` (default: `DEBUG`)
 
 ### Spawn Cursor Agents
 Spawns Cursor Cloud agents and announces each agent on the bus.

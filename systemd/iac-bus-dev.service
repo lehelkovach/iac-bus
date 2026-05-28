@@ -1,0 +1,17 @@
+[Unit]
+Description=Inter-Agent Communication Bus (Development Hot Reload)
+Documentation=https://github.com/lehelkovach/iac-bus
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/iac-bus-dev/iac-bus-dev.env
+ExecStart=/bin/bash -lc '"${APP_DIR}/scripts/run-dev-hot-reload.sh"'
+Restart=always
+RestartSec=2
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

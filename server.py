@@ -292,6 +292,15 @@ def _bus_add_message(payload):
             msg[key] = payload[key]
     with _bus_lock:
         _bus_messages.append(msg)
+    logger.debug(
+        "bus_message_added id=%s channel=%s type=%s queue=%s status=%s sender=%s",
+        msg["id"],
+        msg["channel"],
+        msg.get("type", "event"),
+        msg.get("queue", ""),
+        msg["status"],
+        msg["sender"],
+    )
     _bus_prune()
     return msg
 
@@ -315,6 +324,14 @@ def _claim_queue_message(queue, worker, lease_seconds):
             message["leased_by"] = worker
             message["lease_until"] = now + lease_seconds
             message["lease_id"] = uuid.uuid4().hex
+            logger.debug(
+                "queue_message_claimed queue=%s message_id=%s worker=%s lease_seconds=%s lease_id=%s",
+                queue,
+                message["id"],
+                worker,
+                lease_seconds,
+                message["lease_id"],
+            )
             return message
     return None
 
@@ -335,8 +352,22 @@ def _ack_queue_message(queue, message_id, worker, lease_id, requeue):
                 return None, "lease id mismatch"
             if requeue:
                 _release_message(message)
+                logger.debug(
+                    "queue_message_nacked queue=%s message_id=%s worker=%s lease_id=%s",
+                    queue,
+                    message_id,
+                    worker,
+                    lease_id,
+                )
                 return message, None
             _bus_messages.pop(idx)
+            logger.debug(
+                "queue_message_acked queue=%s message_id=%s worker=%s lease_id=%s",
+                queue,
+                message_id,
+                worker,
+                lease_id,
+            )
             return message, None
     return None, "not found"
 
@@ -352,6 +383,13 @@ def bus_post_message():
         error_msg, status_code = orch_error
         return jsonify({"error": error_msg}), status_code
     msg = _bus_add_message(payload)
+    logger.debug(
+        "bus_post_message accepted id=%s channel=%s type=%s sender=%s",
+        msg["id"],
+        msg["channel"],
+        msg.get("type", "event"),
+        msg["sender"],
+    )
     if orch_action:
         if orch_action["action"] == "job":
             with _jobs_lock:
@@ -367,6 +405,11 @@ def bus_post_message():
                 )
         for assignment in payloads:
             _bus_add_message(assignment)
+        logger.debug(
+            "orchestration_dispatch processed action=%s payloads_enqueued=%s",
+            orch_action["action"],
+            len(payloads),
+        )
     return jsonify({"success": True, "message": msg}), 201
 
 
@@ -391,6 +434,14 @@ def bus_get_messages():
             msgs = msgs[idx + 1:]
         except StopIteration:
             pass
+    logger.debug(
+        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s returned=%s",
+        channel or "*",
+        since_id or "",
+        limit,
+        include_queue,
+        len(msgs[-limit:]),
+    )
     return jsonify({"messages": msgs[-limit:]})
 
 
