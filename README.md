@@ -349,6 +349,29 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=task.api-contract&since_id=<LAST
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
+## Multi-Agent Coordination Entropy Benchmark ("LIPMESS test")
+
+Use the synthetic benchmark to compare a time-boxed umbrella workflow:
+
+- `without_bus`: ad-hoc swarm behavior (stale state, duplicate effort, rework)
+- `with_bus`: orchestrated task leasing/assignment behavior
+
+Run:
+```bash
+python3 scripts/run-multiagent-entropy-benchmark.py --pretty
+```
+
+The benchmark reports:
+
+- completion ratio within a fixed tick budget,
+- entropy score (collision + rework + blocking pressure),
+- productivity score,
+- per-trial details for reproducibility.
+
+Regression tests for this benchmark live in:
+
+- `tests/test_multiagent_entropy_benchmark.py`
+
 ## Hotfix (no OCI credentials)
 
 Apply a hotfix directly on a VM by pulling a tarball from GitHub:

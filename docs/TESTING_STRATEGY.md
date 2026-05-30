@@ -38,6 +38,8 @@ Example scenario families:
 - stale assumption detected and task blocked
 - orchestrator assigns task and worker escalates blocker
 - lock contention prevents conflicting writes
+- time-boxed "lipmess" umbrella task: uncoordinated swarm stalls while
+  coordinated bus-assisted swarm completes
 
 ### L4 - Concurrency and resilience tests
 Purpose: stress coordination reliability.
@@ -110,3 +112,6 @@ A feature is "done" only when:
 6. Message taxonomy validation for required generic `type` values
 7. Channel convention conformance for `project.*`, `repo.*`, `task.*`, `agent.*`
 8. Slack dry-run emission for blocker/handoff/done/decision/error
+9. Coordination entropy benchmark regression:
+   - enforce lower entropy score with bus mode
+   - enforce higher completion ratio within fixed tick budget with bus mode
