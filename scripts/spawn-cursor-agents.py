@@ -13,8 +13,11 @@ import requests
 
 
 def _cursor_headers(api_key: str) -> Dict[str, str]:
-    # Cursor API uses Basic Auth with the key as username, blank password.
-    return {"Authorization": f"Basic {api_key}", "Content-Type": "application/json"}
+    # Cursor API uses Bearer auth: `Authorization: Bearer <API_KEY>`.
+    # (The previous `Basic {key}` form was invalid — Basic requires a
+    # base64(user:pass) credential, so it 401'd. Verified 2026-07-24 that
+    # Bearer returns 200 from https://api.cursor.com/v0/agents.)
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
 def _bus_headers(token: str) -> Dict[str, str]:
@@ -26,9 +29,11 @@ def _bus_headers(token: str) -> Dict[str, str]:
 
 def spawn_agents(endpoint: str, api_key: str, payload: Dict, count: int) -> List[Dict]:
     agents = []
-    for i in range(count):
+    for _ in range(count):
         body = dict(payload)
-        body.setdefault("name", f"agent-{i + 1}")
+        # NOTE: the Cursor v0 API rejects an unrecognized top-level `name` key
+        # (400 unrecognized_keys); it derives the agent name from the prompt.
+        # Do NOT inject `name` here.
         resp = requests.post(endpoint, headers=_cursor_headers(api_key), json=body, timeout=30)
         resp.raise_for_status()
         agents.append(resp.json())
