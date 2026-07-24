@@ -15,7 +15,8 @@ ID_RE = re.compile(r"[0-9a-fA-F-]{36}")
 
 
 def _cursor_headers(api_key: str) -> dict:
-    return {"Authorization": f"Basic {api_key}"}
+    # Cursor API uses Bearer auth (see spawn-cursor-agents.py note).
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 def _bus_headers(token: str) -> dict:
