@@ -1,5 +1,9 @@
 # Inter-Agent Communication Bus (IAC Bus)
 
+## When to use this repo
+
+See [`docs/WHEN-NEEDED-AND-MVP.md`](docs/WHEN-NEEDED-AND-MVP.md) — Stage-1 autofill does **not** need the bus; multi-agent / Cursor spawn coordination does.
+
 Lightweight message bus for coordinating multiple agents over HTTP.
 
 ## Features
@@ -84,6 +88,17 @@ python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 BUS_API_TOKEN=devtoken ./venv/bin/python server.py
 ```
+
+## Tests + smoke
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+chmod +x scripts/bus_smoke.sh
+./scripts/bus_smoke.sh   # starts local server on :18091, hits /health, post/poll, claim/ack
+```
+
+Set `START_SERVER=0` and `BUS_URL=http://host:8091` to smoke against an already-running bus. Override `BUS_PORT` when starting a dedicated smoke server (default `18091` avoids clashing with dev on `8091`).
 
 ## Deploy (systemd)
 ```bash
@@ -366,23 +381,32 @@ Deploy and configure the Oracle dev VM with hot-reload service:
 ./scripts/deploy-dev-vm.sh
 ```
 
-## Spawn Cursor Agents + Bus Announce
+## Spawn one agent
 
-This script spawns Cursor Cloud Agents and announces each agent on the bus.
+Start the bus, spawn a single Cursor Cloud Agent, and announce it on the `ops` channel:
 
 ```bash
+# 1) Bus (separate terminal)
+BUS_API_TOKEN=devtoken python3 server.py
+
+# 2) Spawn + announce (requires CURSOR_API_KEY)
 export CURSOR_API_KEY="key_xxx..."
 python3 scripts/spawn-cursor-agents.py \
   --cursor-endpoint "https://api.cursor.com/v0/agents" \
-  --count 2 \
-  --payload '{"name":"agent-a"}' \
+  --count 1 \
+  --payload '{"prompt":{"text":"Your task here"}}' \
   --bus-url "http://127.0.0.1:8091" \
   --bus-token "$BUS_API_TOKEN"
+
+# 3) Verify on bus
+curl "http://127.0.0.1:8091/bus/messages?channel=ops" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
 Notes:
-- Cursor uses **Basic Auth** with the key as the username and a blank password.
-- `--payload` is passed directly to the Cursor API and can include custom fields.
+- Cursor API auth: `Authorization: Bearer <CURSOR_API_KEY>` (not Basic).
+- Do **not** send a top-level `name` in `--payload`; the API rejects it and derives the name from the prompt.
+- Spawn posts `lifecycle.spawned` messages like `spawned:<agent-id>` on `--channel` (default `ops`).
 
 ## Handoff: Terminate Cursor Agents
 
