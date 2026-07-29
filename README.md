@@ -1,13 +1,21 @@
 # Inter-Agent Communication Bus (IAC Bus)
 
+## When to use this repo
+
+See [`docs/WHEN-NEEDED-AND-MVP.md`](docs/WHEN-NEEDED-AND-MVP.md) — Stage-1 autofill does **not** need the bus; multi-agent / Cursor spawn coordination does.
+
 Lightweight message bus for coordinating multiple agents over HTTP.
 
 ## Features
 - Simple REST endpoints for posting and polling messages
-- In-memory retention with size + time limits
-- Queue-style work leasing (claim/ack/nack)
+- SQLite durable store for messages, queue leases, agents, and locks (`BUS_DB_PATH`)
+- Queue-style work leasing (claim/ack/nack) with no double-lease while held
+- Agent registry + heartbeat (`/agents/register`, `/agents/heartbeat`)
+- Repo/path lock API with lease + fencing token (`/bus/locks/*`)
+- Long-poll reads via `wait_seconds` on `GET /bus/messages`
 - Optional bearer-token auth
 - Systemd service deployment
+- Version: `0.1.0-dev` (see `VERSION`)
 
 ## Endpoints
 
@@ -28,6 +36,12 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
 Use `since_id` to avoid re-reading older messages:
 ```bash
 curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Long-poll until a new message arrives (or timeout):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>&wait_seconds=20" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
@@ -61,6 +75,38 @@ curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
   -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>","requeue":true}'
 ```
 
+### Agent register + heartbeat
+```bash
+curl -X POST http://<BUS_IP>:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"brand":"cursor","repo_locale":"iac-bus","ordinal_path":"0","role":"master","medium":"api"}'
+
+curl -X POST http://<BUS_IP>:8091/agents/heartbeat \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_uuid":"<UUID>","medium":"api"}'
+```
+
+### Repo/path locks
+```bash
+# resource_key convention: repo:<name>/path:<relative-path>
+curl -X POST http://<BUS_IP>:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","lease_seconds":60}'
+
+curl -X POST http://<BUS_IP>:8091/bus/locks/renew \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","fencing_token":1,"lease_seconds":60}'
+
+curl -X POST http://<BUS_IP>:8091/bus/locks/release \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","fencing_token":1}'
+```
+
 ### Health check
 ```bash
 curl http://<BUS_IP>:8091/health
@@ -73,9 +119,13 @@ curl http://<BUS_IP>:8091/health
 | `BUS_HOST` | `0.0.0.0` | Bind address |
 | `BUS_PORT` | `8091` | Listen port |
 | `BUS_API_TOKEN` | empty | Bearer token |
+| `BUS_DB_PATH` | `data/iac-bus.db` | SQLite path (`:memory:` for tests) |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
+| `BUS_LOCK_LEASE_SECONDS` | `60` | Default lock lease seconds |
+| `BUS_MAX_WAIT_SECONDS` | `30` | Cap for `wait_seconds` long-poll |
+| `BUS_VERSION` | `0.1.0-dev` | Reported in `/health` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 
 ## Local Run
@@ -84,6 +134,17 @@ python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 BUS_API_TOKEN=devtoken ./venv/bin/python server.py
 ```
+
+## Tests + smoke
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+chmod +x scripts/bus_smoke.sh
+./scripts/bus_smoke.sh   # starts local server on :18091, hits /health, post/poll, claim/ack
+```
+
+Set `START_SERVER=0` and `BUS_URL=http://host:8091` to smoke against an already-running bus. Override `BUS_PORT` when starting a dedicated smoke server (default `18091` avoids clashing with dev on `8091`).
 
 ## Deploy (systemd)
 ```bash
@@ -366,23 +427,32 @@ Deploy and configure the Oracle dev VM with hot-reload service:
 ./scripts/deploy-dev-vm.sh
 ```
 
-## Spawn Cursor Agents + Bus Announce
+## Spawn one agent
 
-This script spawns Cursor Cloud Agents and announces each agent on the bus.
+Start the bus, spawn a single Cursor Cloud Agent, and announce it on the `ops` channel:
 
 ```bash
+# 1) Bus (separate terminal)
+BUS_API_TOKEN=devtoken python3 server.py
+
+# 2) Spawn + announce (requires CURSOR_API_KEY)
 export CURSOR_API_KEY="key_xxx..."
 python3 scripts/spawn-cursor-agents.py \
   --cursor-endpoint "https://api.cursor.com/v0/agents" \
-  --count 2 \
-  --payload '{"name":"agent-a"}' \
+  --count 1 \
+  --payload '{"prompt":{"text":"Your task here"}}' \
   --bus-url "http://127.0.0.1:8091" \
   --bus-token "$BUS_API_TOKEN"
+
+# 3) Verify on bus
+curl "http://127.0.0.1:8091/bus/messages?channel=ops" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
 Notes:
-- Cursor uses **Basic Auth** with the key as the username and a blank password.
-- `--payload` is passed directly to the Cursor API and can include custom fields.
+- Cursor API auth: `Authorization: Bearer <CURSOR_API_KEY>` (not Basic).
+- Do **not** send a top-level `name` in `--payload`; the API rejects it and derives the name from the prompt.
+- Spawn posts `lifecycle.spawned` messages like `spawned:<agent-id>` on `--channel` (default `ops`).
 
 ## Handoff: Terminate Cursor Agents
 
