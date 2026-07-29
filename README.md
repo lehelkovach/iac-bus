@@ -8,10 +8,14 @@ Lightweight message bus for coordinating multiple agents over HTTP.
 
 ## Features
 - Simple REST endpoints for posting and polling messages
-- In-memory retention with size + time limits
-- Queue-style work leasing (claim/ack/nack)
+- SQLite durable store for messages, queue leases, agents, and locks (`BUS_DB_PATH`)
+- Queue-style work leasing (claim/ack/nack) with no double-lease while held
+- Agent registry + heartbeat (`/agents/register`, `/agents/heartbeat`)
+- Repo/path lock API with lease + fencing token (`/bus/locks/*`)
+- Long-poll reads via `wait_seconds` on `GET /bus/messages`
 - Optional bearer-token auth
 - Systemd service deployment
+- Version: `0.1.0-dev` (see `VERSION`)
 
 ## Endpoints
 
@@ -32,6 +36,12 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
 Use `since_id` to avoid re-reading older messages:
 ```bash
 curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Long-poll until a new message arrives (or timeout):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>&wait_seconds=20" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
@@ -65,6 +75,38 @@ curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
   -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>","requeue":true}'
 ```
 
+### Agent register + heartbeat
+```bash
+curl -X POST http://<BUS_IP>:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"brand":"cursor","repo_locale":"iac-bus","ordinal_path":"0","role":"master","medium":"api"}'
+
+curl -X POST http://<BUS_IP>:8091/agents/heartbeat \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_uuid":"<UUID>","medium":"api"}'
+```
+
+### Repo/path locks
+```bash
+# resource_key convention: repo:<name>/path:<relative-path>
+curl -X POST http://<BUS_IP>:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","lease_seconds":60}'
+
+curl -X POST http://<BUS_IP>:8091/bus/locks/renew \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","fencing_token":1,"lease_seconds":60}'
+
+curl -X POST http://<BUS_IP>:8091/bus/locks/release \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_key":"repo:iac-bus/path:server.py","holder":"agent-a","fencing_token":1}'
+```
+
 ### Health check
 ```bash
 curl http://<BUS_IP>:8091/health
@@ -77,9 +119,13 @@ curl http://<BUS_IP>:8091/health
 | `BUS_HOST` | `0.0.0.0` | Bind address |
 | `BUS_PORT` | `8091` | Listen port |
 | `BUS_API_TOKEN` | empty | Bearer token |
+| `BUS_DB_PATH` | `data/iac-bus.db` | SQLite path (`:memory:` for tests) |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
+| `BUS_LOCK_LEASE_SECONDS` | `60` | Default lock lease seconds |
+| `BUS_MAX_WAIT_SECONDS` | `30` | Cap for `wait_seconds` long-poll |
+| `BUS_VERSION` | `0.1.0-dev` | Reported in `/health` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 
 ## Local Run

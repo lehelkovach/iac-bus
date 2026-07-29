@@ -16,13 +16,13 @@ low-latency delivery over polling now and push transport later.
 - [x] Basic unit tests for auth, polling, and queue leasing.
 
 ### M1 - Identity, routing, and coordination
-- [ ] Agent registration + heartbeat TTL (presence).
+- [x] Agent registration + heartbeat TTL (presence).
 - [ ] Roles and hierarchy (supervisor/subordinate).
 - [ ] Directed routing (recipient, group) and ACL rules.
 - [ ] Conversation threads and correlation IDs.
 
 ### M2 - Reliability and storage
-- [ ] Durable storage (SQLite/Redis/Postgres).
+- [x] Durable storage (SQLite baseline; Postgres later).
 - [ ] Dead-letter queues + retry/backoff policies.
 - [ ] Priority scheduling and ordering controls.
 

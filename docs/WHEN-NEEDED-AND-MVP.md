@@ -63,10 +63,11 @@ Cheap, high-leverage only. **No** Postgres, **no** OPA, **no** Slack flood bridg
 
 ## Definition of done
 
-- [ ] M1 scripts correct + mocked unit tests  
-- [ ] M2 pytest CI + local smoke script  
-- [ ] Draft PR(s) to `master` (this repo has no `dev` yet — establish `dev` off `master` if easy, else PR to `master`)  
-- [ ] This file linked from README “When to use”  
+- [x] M1 scripts correct + mocked unit tests  
+- [x] M2 pytest CI + local smoke script  
+- [x] Draft PR(s) to `master` (this repo has no `dev` yet — establish `dev` off `master` if easy, else PR to `master`)  
+- [x] This file linked from README “When to use”  
+- [x] v0.1 coordination MVP: SQLite messages/leases, agent registry/heartbeat, repo/path locks, `wait_seconds`  
 
 ---
 
