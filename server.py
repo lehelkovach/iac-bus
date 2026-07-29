@@ -7,7 +7,6 @@ import logging
 import os
 import threading
 import time
-import uuid
 
 from flask import Flask, jsonify, request
 
@@ -22,6 +21,7 @@ from orchestration import (
     mark_step_skipped,
     validate_job_spec,
 )
+from store import BusStore, create_store
 
 app = Flask(__name__)
 
@@ -38,18 +38,33 @@ BUS_API_TOKEN = os.environ.get("BUS_API_TOKEN", "")
 BUS_MAX_MESSAGES = int(os.environ.get("BUS_MAX_MESSAGES", "500"))
 BUS_RETENTION_SECONDS = int(os.environ.get("BUS_RETENTION_SECONDS", "3600"))
 BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
+BUS_LOCK_LEASE_SECONDS = int(os.environ.get("BUS_LOCK_LEASE_SECONDS", "60"))
+BUS_MAX_WAIT_SECONDS = float(os.environ.get("BUS_MAX_WAIT_SECONDS", "30"))
+BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0-dev")
+BUS_DB_PATH = os.environ.get("BUS_DB_PATH", os.path.join("data", "iac-bus.db"))
 
 STATUS_PUBLISHED = "published"
 STATUS_PENDING = "pending"
-STATUS_LEASED = "leased"
 
-# In-memory state
-_bus_messages = []
-_bus_lock = threading.Lock()
+# Durable coordination store (SQLite). Override BUS_DB_PATH=:memory: in tests.
+_store: BusStore = create_store(BUS_DB_PATH)
 
-# Orchestration state
+# Orchestration state (in-memory; not part of v0.1 durable MVP)
 _jobs = {}
 _jobs_lock = threading.Lock()
+
+
+def reset_store(db_path=None):
+    """Replace the process store (used by tests)."""
+    global _store, BUS_DB_PATH
+    try:
+        _store.close()
+    except Exception:
+        pass
+    if db_path is not None:
+        BUS_DB_PATH = db_path
+    _store = create_store(BUS_DB_PATH)
+    return _store
 
 
 def _require_auth():
@@ -145,21 +160,6 @@ def _normalize_message_payload(data):
         "ttl_seconds": ttl_seconds,
     }
     return payload, errors
-
-
-def _message_is_expired(message, now):
-    ttl_seconds = message.get("ttl_seconds")
-    if ttl_seconds is not None:
-        if now - message["ts"] > ttl_seconds:
-            return True
-    return now - message["ts"] > BUS_RETENTION_SECONDS
-
-
-def _release_message(message):
-    message["status"] = STATUS_PENDING
-    message["leased_by"] = ""
-    message["lease_until"] = 0
-    message["lease_id"] = ""
 
 
 def _build_assignment_payload(job, step):
@@ -259,39 +259,17 @@ def _prepare_orchestration_action(payload):
 
 
 def _bus_prune(now=None):
-    now = now or time.time()
-    with _bus_lock:
-        for message in _bus_messages:
-            if message.get("status") == STATUS_LEASED and message.get("lease_until", 0) <= now:
-                _release_message(message)
-        _bus_messages[:] = [m for m in _bus_messages if not _message_is_expired(m, now)]
-        if len(_bus_messages) > BUS_MAX_MESSAGES:
-            _bus_messages[:] = _bus_messages[-BUS_MAX_MESSAGES:]
+    _store.prune(
+        now=now,
+        retention_seconds=BUS_RETENTION_SECONDS,
+        max_messages=BUS_MAX_MESSAGES,
+    )
 
 
 def _bus_add_message(payload):
     queue = payload.get("queue", "")
     status = STATUS_PENDING if queue else STATUS_PUBLISHED
-    msg = {
-        "id": uuid.uuid4().hex,
-        "ts": time.time(),
-        "protocol": payload.get("protocol") or "iac-bus/1.0",
-        "channel": payload["channel"],
-        "sender": payload["sender"],
-        "message": payload["message"],
-        "type": payload["type"],
-        "queue": queue,
-        "priority": payload["priority"],
-        "status": status,
-        "leased_by": "",
-        "lease_until": 0,
-        "lease_id": "",
-    }
-    for key in ("conversation_id", "reply_to", "recipient", "group", "headers", "ttl_seconds"):
-        if payload.get(key) is not None:
-            msg[key] = payload[key]
-    with _bus_lock:
-        _bus_messages.append(msg)
+    msg = _store.add_message(payload, status=status)
     logger.debug(
         "bus_message_added id=%s channel=%s type=%s queue=%s status=%s sender=%s",
         msg["id"],
@@ -310,66 +288,33 @@ def _claim_queue_message(queue, worker, lease_seconds):
     _bus_prune(now)
     if lease_seconds is None:
         lease_seconds = BUS_QUEUE_LEASE_SECONDS
-    with _bus_lock:
-        for message in _bus_messages:
-            if message.get("queue") != queue:
-                continue
-            if message.get("status") == STATUS_LEASED:
-                if message.get("lease_until", 0) > now:
-                    continue
-                _release_message(message)
-            if message.get("status") != STATUS_PENDING:
-                continue
-            message["status"] = STATUS_LEASED
-            message["leased_by"] = worker
-            message["lease_until"] = now + lease_seconds
-            message["lease_id"] = uuid.uuid4().hex
-            logger.debug(
-                "queue_message_claimed queue=%s message_id=%s worker=%s lease_seconds=%s lease_id=%s",
-                queue,
-                message["id"],
-                worker,
-                lease_seconds,
-                message["lease_id"],
-            )
-            return message
-    return None
+    msg = _store.claim_queue(queue, worker, lease_seconds, now=now)
+    if msg:
+        logger.debug(
+            "queue_message_claimed queue=%s message_id=%s worker=%s lease_seconds=%s lease_id=%s",
+            queue,
+            msg["id"],
+            worker,
+            lease_seconds,
+            msg["lease_id"],
+        )
+    return msg
 
 
 def _ack_queue_message(queue, message_id, worker, lease_id, requeue):
     _bus_prune()
-    with _bus_lock:
-        for idx, message in enumerate(_bus_messages):
-            if message.get("id") != message_id:
-                continue
-            if message.get("queue") != queue:
-                continue
-            if message.get("status") != STATUS_LEASED:
-                return None, "message not leased"
-            if message.get("leased_by") != worker:
-                return None, "lease owner mismatch"
-            if message.get("lease_id") != lease_id:
-                return None, "lease id mismatch"
-            if requeue:
-                _release_message(message)
-                logger.debug(
-                    "queue_message_nacked queue=%s message_id=%s worker=%s lease_id=%s",
-                    queue,
-                    message_id,
-                    worker,
-                    lease_id,
-                )
-                return message, None
-            _bus_messages.pop(idx)
-            logger.debug(
-                "queue_message_acked queue=%s message_id=%s worker=%s lease_id=%s",
-                queue,
-                message_id,
-                worker,
-                lease_id,
-            )
-            return message, None
-    return None, "not found"
+    msg, error = _store.ack_queue(queue, message_id, worker, lease_id, requeue)
+    if error is None and msg is not None:
+        action = "nacked" if requeue else "acked"
+        logger.debug(
+            "queue_message_%s queue=%s message_id=%s worker=%s lease_id=%s",
+            action,
+            queue,
+            message_id,
+            worker,
+            lease_id,
+        )
+    return msg, error
 
 
 @app.route("/bus/messages", methods=["POST"])
@@ -419,30 +364,35 @@ def bus_get_messages():
     since_id = request.args.get("since_id", "")
     limit = int(request.args.get("limit", "50"))
     include_queue = _parse_bool(request.args.get("include_queue", "false"))
+    wait_raw = request.args.get("wait_seconds", "0")
+    try:
+        wait_seconds = float(wait_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "wait_seconds must be number"}), 400
+    if wait_seconds < 0:
+        return jsonify({"error": "wait_seconds must be >= 0"}), 400
+    if wait_seconds > BUS_MAX_WAIT_SECONDS:
+        wait_seconds = BUS_MAX_WAIT_SECONDS
     if limit > 200:
         limit = 200
     _bus_prune()
-    with _bus_lock:
-        msgs = list(_bus_messages)
-    if channel:
-        msgs = [m for m in msgs if m["channel"] == channel]
-    if not include_queue:
-        msgs = [m for m in msgs if not m.get("queue")]
-    if since_id:
-        try:
-            idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
-            msgs = msgs[idx + 1:]
-        except StopIteration:
-            pass
+    msgs = _store.wait_for_messages(
+        channel=channel,
+        since_id=since_id,
+        include_queue=include_queue,
+        limit=limit,
+        wait_seconds=wait_seconds,
+    )
     logger.debug(
-        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s returned=%s",
+        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s wait_seconds=%s returned=%s",
         channel or "*",
         since_id or "",
         limit,
         include_queue,
-        len(msgs[-limit:]),
+        wait_seconds,
+        len(msgs),
     )
-    return jsonify({"messages": msgs[-limit:]})
+    return jsonify({"messages": msgs})
 
 
 @app.route("/bus/queues/claim", methods=["POST"])
@@ -527,6 +477,129 @@ def bus_nack_queue_message():
     return jsonify({"success": True, "message": msg})
 
 
+@app.route("/agents/register", methods=["POST"])
+def agents_register():
+    data = request.get_json() or {}
+    result, err = _store.register_agent(data)
+    if err:
+        error_msg, status_code, extra = err
+        body = {"error": error_msg}
+        body.update(extra)
+        return jsonify(body), status_code
+    status = 201 if result.get("created") else 200
+    return jsonify(result), status
+
+
+@app.route("/agents/heartbeat", methods=["POST"])
+def agents_heartbeat():
+    data = request.get_json() or {}
+    result, err = _store.heartbeat(data)
+    if err:
+        error_msg, status_code = err
+        return jsonify({"error": error_msg}), status_code
+    return jsonify(result)
+
+
+@app.route("/agents/<agent_uuid>", methods=["GET"])
+def agents_get(agent_uuid):
+    agent = _store.get_agent(agent_uuid)
+    if not agent:
+        return jsonify({"error": "agent not found"}), 404
+    return jsonify({"agent": agent})
+
+
+@app.route("/bus/locks/acquire", methods=["POST"])
+def bus_lock_acquire():
+    data = request.get_json() or {}
+    resource_key = data.get("resource_key", "")
+    holder = data.get("holder", "")
+    mode = data.get("mode", "exclusive")
+    lease_seconds = data.get("lease_seconds", BUS_LOCK_LEASE_SECONDS)
+    metadata = data.get("metadata")
+    if not isinstance(resource_key, str) or not resource_key.strip():
+        return jsonify({"error": "resource_key required"}), 400
+    if not isinstance(holder, str) or not holder.strip():
+        return jsonify({"error": "holder required"}), 400
+    if not isinstance(lease_seconds, (int, float)):
+        return jsonify({"error": "lease_seconds must be number"}), 400
+    if metadata is not None and not isinstance(metadata, dict):
+        return jsonify({"error": "metadata must be object"}), 400
+    lock, error = _store.acquire_lock(
+        resource_key=resource_key,
+        holder=holder,
+        mode=mode if isinstance(mode, str) else "exclusive",
+        lease_seconds=float(lease_seconds),
+        metadata=metadata,
+    )
+    if error == "lock held":
+        existing = _store.get_lock(resource_key)
+        return jsonify({"error": error, "lock": existing}), 409
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify({"success": True, "lock": lock}), 201
+
+
+@app.route("/bus/locks/renew", methods=["POST"])
+def bus_lock_renew():
+    data = request.get_json() or {}
+    resource_key = data.get("resource_key", "")
+    holder = data.get("holder", "")
+    fencing_token = data.get("fencing_token")
+    lease_seconds = data.get("lease_seconds", BUS_LOCK_LEASE_SECONDS)
+    if not isinstance(resource_key, str) or not resource_key.strip():
+        return jsonify({"error": "resource_key required"}), 400
+    if not isinstance(holder, str) or not holder.strip():
+        return jsonify({"error": "holder required"}), 400
+    if not isinstance(fencing_token, int):
+        return jsonify({"error": "fencing_token required"}), 400
+    if not isinstance(lease_seconds, (int, float)):
+        return jsonify({"error": "lease_seconds must be number"}), 400
+    lock, error = _store.renew_lock(
+        resource_key=resource_key,
+        holder=holder,
+        fencing_token=fencing_token,
+        lease_seconds=float(lease_seconds),
+    )
+    if error:
+        status = 409 if "mismatch" in error or error == "lock not held" else 400
+        return jsonify({"error": error}), status
+    return jsonify({"success": True, "lock": lock})
+
+
+@app.route("/bus/locks/release", methods=["POST"])
+def bus_lock_release():
+    data = request.get_json() or {}
+    resource_key = data.get("resource_key", "")
+    holder = data.get("holder", "")
+    fencing_token = data.get("fencing_token")
+    if not isinstance(resource_key, str) or not resource_key.strip():
+        return jsonify({"error": "resource_key required"}), 400
+    if not isinstance(holder, str) or not holder.strip():
+        return jsonify({"error": "holder required"}), 400
+    if not isinstance(fencing_token, int):
+        return jsonify({"error": "fencing_token required"}), 400
+    lock, error = _store.release_lock(
+        resource_key=resource_key,
+        holder=holder,
+        fencing_token=fencing_token,
+    )
+    if error:
+        status = 409 if "mismatch" in error or error == "lock not held" else 400
+        return jsonify({"error": error}), status
+    return jsonify({"success": True, "lock": lock})
+
+
+@app.route("/bus/locks", methods=["GET"])
+def bus_lock_get():
+    resource_key = request.args.get("resource_key", "")
+    if not resource_key.strip():
+        return jsonify({"error": "resource_key required"}), 400
+    lock = _store.get_lock(resource_key)
+    if not lock:
+        return jsonify({"error": "lock not held"}), 404
+    return jsonify({"lock": lock})
+
+
 @app.route("/bus/orchestration/jobs/<job_id>", methods=["GET"])
 def bus_get_orchestration_job(job_id):
     with _jobs_lock:
@@ -551,11 +624,16 @@ def bus_get_orchestration_ready(job_id):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "messages": len(_bus_messages)})
+    return jsonify({
+        "status": "ok",
+        "version": BUS_VERSION,
+        "messages": _store.message_count(),
+        "db_path": BUS_DB_PATH,
+    })
 
 
 if __name__ == "__main__":
     host = os.environ.get("BUS_HOST", "0.0.0.0")
     port = int(os.environ.get("BUS_PORT", "8091"))
-    logger.info("Starting IAC Bus on %s:%s", host, port)
+    logger.info("Starting IAC Bus %s on %s:%s (db=%s)", BUS_VERSION, host, port, BUS_DB_PATH)
     app.run(host=host, port=port, threaded=True)

@@ -1,19 +1,4 @@
-import importlib
-import sys
-from pathlib import Path
-
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-
-def _load_server(monkeypatch, token=""):
-    monkeypatch.setenv("BUS_API_TOKEN", token)
-    if "server" in sys.modules:
-        del sys.modules["server"]
-    import server  # noqa: F401
-    return importlib.reload(sys.modules["server"])
+from conftest import load_server
 
 
 def _collect_assignment(messages, step_id):
@@ -26,9 +11,7 @@ def _collect_assignment(messages, step_id):
 
 
 def test_orchestration_job_dispatches_ready_steps(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
-    server._jobs.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     resp = client.post(
@@ -56,9 +39,7 @@ def test_orchestration_job_dispatches_ready_steps(monkeypatch):
 
 
 def test_orchestration_step_status_enqueues_next(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
-    server._jobs.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     client.post(

@@ -1,23 +1,11 @@
-import importlib
-import sys
-from pathlib import Path
+import threading
+import time
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-
-def _load_server(monkeypatch, token=""):
-    monkeypatch.setenv("BUS_API_TOKEN", token)
-    if "server" in sys.modules:
-        del sys.modules["server"]
-    import server  # noqa: F401
-    return importlib.reload(sys.modules["server"])
+from conftest import load_server
 
 
 def test_post_without_auth_allowed(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     resp = client.post("/bus/messages", json={"message": "hello"})
@@ -27,8 +15,7 @@ def test_post_without_auth_allowed(monkeypatch):
 
 
 def test_post_requires_auth(monkeypatch):
-    server = _load_server(monkeypatch, token="secret")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="secret")
     client = server.app.test_client()
 
     resp = client.post("/bus/messages", json={"message": "hello"})
@@ -43,8 +30,7 @@ def test_post_requires_auth(monkeypatch):
 
 
 def test_since_id_filters(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     resp = client.post("/bus/messages", json={"channel": "ops", "message": "one"})
@@ -58,8 +44,7 @@ def test_since_id_filters(monkeypatch):
 
 
 def test_queue_claim_and_ack(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     resp = client.post(
@@ -97,9 +82,25 @@ def test_queue_claim_and_ack(monkeypatch):
     assert claim.status_code == 204
 
 
+def test_queue_no_double_lease(monkeypatch):
+    server = load_server(monkeypatch, token="")
+    client = server.app.test_client()
+
+    client.post("/bus/messages", json={"queue": "work", "message": "only-one"})
+    first = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a", "lease_seconds": 60},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-b", "lease_seconds": 60},
+    )
+    assert second.status_code == 204
+
+
 def test_queue_lease_expires(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     now = {"t": 1000}
@@ -125,8 +126,7 @@ def test_queue_lease_expires(monkeypatch):
 
 
 def test_poll_excludes_queue_by_default(monkeypatch):
-    server = _load_server(monkeypatch, token="")
-    server._bus_messages.clear()
+    server = load_server(monkeypatch, token="")
     client = server.app.test_client()
 
     client.post("/bus/messages", json={"message": "broadcast"})
@@ -140,3 +140,62 @@ def test_poll_excludes_queue_by_default(monkeypatch):
     resp = client.get("/bus/messages?include_queue=true")
     data = resp.get_json()
     assert len(data["messages"]) == 2
+
+
+def test_wait_seconds_returns_early_on_new_message(monkeypatch):
+    server = load_server(monkeypatch, token="")
+    results = {}
+
+    def waiter():
+        started = time.time()
+        # Exercise store long-poll (HTTP test client is not thread-safe).
+        msgs = server._store.wait_for_messages(
+            channel="ops", since_id="", include_queue=False, limit=50, wait_seconds=5
+        )
+        results["elapsed"] = time.time() - started
+        results["msgs"] = msgs
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    time.sleep(0.15)
+    server._bus_add_message(
+        {
+            "protocol": "iac-bus/1.0",
+            "channel": "ops",
+            "sender": "tester",
+            "message": "late",
+            "type": "event",
+            "queue": "",
+            "priority": 0,
+        }
+    )
+    thread.join(timeout=6)
+    assert results["elapsed"] < 3.0
+    assert len(results["msgs"]) == 1
+    assert results["msgs"][0]["message"] == "late"
+
+    # HTTP path accepts wait_seconds and returns quickly when messages exist
+    client = server.app.test_client()
+    resp = client.get("/bus/messages?channel=ops&wait_seconds=2")
+    assert resp.status_code == 200
+    assert len(resp.get_json()["messages"]) == 1
+
+
+def test_wait_seconds_times_out_empty(monkeypatch):
+    server = load_server(monkeypatch, token="")
+    client = server.app.test_client()
+    started = time.time()
+    resp = client.get("/bus/messages?channel=empty&wait_seconds=0.3")
+    elapsed = time.time() - started
+    assert resp.status_code == 200
+    assert resp.get_json()["messages"] == []
+    assert elapsed >= 0.25
+
+
+def test_health_reports_version(monkeypatch):
+    server = load_server(monkeypatch, token="")
+    client = server.app.test_client()
+    resp = client.get("/health")
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["version"] == "0.1.0-dev"
