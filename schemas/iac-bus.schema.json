@@ -13,10 +13,15 @@
       "properties": {
         "protocol": {
           "type": "string",
-          "default": "iac-bus/1.1"
+          "enum": [
+            "iac-bus/1.0",
+            "iac-bus/1.1"
+          ],
+          "default": "iac-bus/1.0"
         },
         "channel": {
           "type": "string",
+          "minLength": 1,
           "default": "default"
         },
         "sender": {
@@ -45,6 +50,7 @@
         },
         "type": {
           "type": "string",
+          "minLength": 1,
           "default": "event"
         },
         "conversation_id": {
@@ -137,7 +143,11 @@
       ],
       "properties": {
         "protocol": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "iac-bus/1.0",
+            "iac-bus/1.1"
+          ]
         },
         "id": {
           "type": "string"
@@ -146,7 +156,8 @@
           "type": "number"
         },
         "channel": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "sender": {
           "type": "string"
@@ -172,7 +183,8 @@
           ]
         },
         "type": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "conversation_id": {
           "type": "string"

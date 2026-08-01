@@ -2,12 +2,30 @@
 
 Lightweight message bus for coordinating multiple agents over HTTP.
 
+## When to use
+
+Use IAC Bus when independent agents need a small HTTP coordination point for
+progress, blockers, handoffs, or queue-style work leasing. Do not use it as a
+secret store or as a replacement for durable workflow infrastructure. See
+[`docs/WHEN-NEEDED.md`](docs/WHEN-NEEDED.md) for the full guidance.
+
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
 - Queue-style work leasing (claim/ack/nack)
 - Optional bearer-token auth
+- OpenClaw-style HTTP skill under `skills/openclaw/`
 - Systemd service deployment
+
+## OpenClaw skill
+
+The OpenClaw-style skill is documented in
+[`docs/OPENCLAW_SKILL.md`](docs/OPENCLAW_SKILL.md). It uses `IAC_BUS_URL` and
+`IAC_BUS_TOKEN`, exposes only HTTP calls, and includes helpers for `progress`,
+`blocker`, and `done` message conventions.
+
+Publish gates and untrusted registry rules are in
+[`docs/CLAWHUB-PUBLISH.md`](docs/CLAWHUB-PUBLISH.md).
 
 ## Endpoints
 
@@ -78,6 +96,9 @@ curl http://<BUS_IP>:8091/health
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 
+Local development keeps the server default at `8091`. On the shared OCI stack
+host, deploy with `BUS_PORT=8101` because `8091` is reserved by `osl-oc-agent`.
+
 ## Local Run
 ```bash
 python3 -m venv venv
@@ -97,6 +118,13 @@ The deploy script installs to `/opt/iac-bus` and creates
 ## OCI Deployment
 
 See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
+
+For the shared stack host, use the OCI deploy wrapper. It defaults to
+`BUS_PORT=8101` and runs `deploy.sh` remotely:
+
+```bash
+scripts/deploy-oci-bus.sh ubuntu@<VM_IP>
+```
 
 ## Dev VM CI/CD (Oracle Cloud)
 

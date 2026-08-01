@@ -4,7 +4,8 @@ This guide assumes an Ubuntu VM on OCI with a public IP and SSH access.
 
 ## Provisioning checklist
 1. Create a VM (Ubuntu 22.04 or newer).
-2. Open inbound TCP 8091 (dev) or 443 (prod via reverse proxy).
+2. Open inbound TCP 8101 for the shared stack bus, 8091 for a standalone dev
+   bus, or 443 for prod via reverse proxy.
 3. Attach your SSH key and note the public IP.
 
 ## Bootstrap on the VM
@@ -25,12 +26,27 @@ sudo systemctl status iac-bus.service
 
 ## Verify
 ```bash
-curl http://<VM_IP>:8091/health
+curl http://<VM_IP>:8101/health
 ```
 
 ## Optional: TLS in front (recommended for live)
-- Use nginx or caddy to terminate TLS on 443 and proxy to 8091.
-- Lock down 8091 to the VCN only.
+- Use nginx or caddy to terminate TLS on 443 and proxy to 8101.
+- Lock down 8101 to the VCN only.
+
+## Shared stack deploy wrapper
+
+The shared OCI stack already uses port 8091 for `osl-oc-agent`, so deploy this
+service with `BUS_PORT=8101`:
+
+```bash
+scripts/deploy-oci-bus.sh ubuntu@<VM_IP>
+```
+
+Override only when the stack owner has reserved another non-conflicting port:
+
+```bash
+BUS_PORT=8102 scripts/deploy-oci-bus.sh ubuntu@<VM_IP>
+```
 
 ## Info needed to complete live deployment
 - VM public IP or DNS name
