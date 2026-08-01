@@ -39,6 +39,8 @@ import urllib.request
 BASE_URL = os.environ["IAC_BUS_URL"].rstrip("/")
 TOKEN = os.environ.get("IAC_BUS_TOKEN", "")
 STARTED = bool(os.environ.get("BUS_API_TOKEN")) and BASE_URL.startswith("http://127.0.0.1:")
+# Unique queue so live/shared buses don't collide with leftover leases.
+QUEUE = f"smoke-work-{int(time.time())}-{os.getpid()}"
 
 
 def request(method, path, payload=None, query=None, expect_status=None):
@@ -103,13 +105,13 @@ print("post/list ok")
 queued = request(
     "POST",
     "/bus/messages",
-    {"channel": "smoke", "queue": "smoke-work", "sender": "smoke-agent", "message": {"task": "ack"}},
+    {"channel": "smoke", "queue": QUEUE, "sender": "smoke-agent", "message": {"task": "ack"}},
     expect_status=201,
 )["message"]
 claimed = request(
     "POST",
     "/bus/queues/claim",
-    {"queue": "smoke-work", "worker": "smoke-worker", "lease_seconds": 30},
+    {"queue": QUEUE, "worker": "smoke-worker", "lease_seconds": 30},
     expect_status=200,
 )["message"]
 assert claimed["id"] == queued["id"], claimed
@@ -117,7 +119,7 @@ request(
     "POST",
     "/bus/queues/ack",
     {
-        "queue": "smoke-work",
+        "queue": QUEUE,
         "message_id": claimed["id"],
         "worker": "smoke-worker",
         "lease_id": claimed["lease_id"],
@@ -129,20 +131,20 @@ print("claim/ack ok")
 queued = request(
     "POST",
     "/bus/messages",
-    {"channel": "smoke", "queue": "smoke-work", "sender": "smoke-agent", "message": {"task": "nack"}},
+    {"channel": "smoke", "queue": QUEUE, "sender": "smoke-agent", "message": {"task": "nack"}},
     expect_status=201,
 )["message"]
 claimed = request(
     "POST",
     "/bus/queues/claim",
-    {"queue": "smoke-work", "worker": "smoke-worker"},
+    {"queue": QUEUE, "worker": "smoke-worker"},
     expect_status=200,
 )["message"]
 request(
     "POST",
     "/bus/queues/nack",
     {
-        "queue": "smoke-work",
+        "queue": QUEUE,
         "message_id": claimed["id"],
         "worker": "smoke-worker",
         "lease_id": claimed["lease_id"],
@@ -153,7 +155,7 @@ request(
 claimed_again = request(
     "POST",
     "/bus/queues/claim",
-    {"queue": "smoke-work", "worker": "smoke-worker-2"},
+    {"queue": QUEUE, "worker": "smoke-worker-2"},
     expect_status=200,
 )["message"]
 assert claimed_again["id"] == queued["id"], claimed_again

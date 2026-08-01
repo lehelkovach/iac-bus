@@ -16,25 +16,24 @@ Provisioned 2026-08-01 from Cursor Cloud.
 ## Reachability
 
 - Host listens on `0.0.0.0:8101` with bearer token (`BUS_API_TOKEN`).
-- Public `:8101` is currently **blocked/filtered** by the VCN security list from outside.
-- From a Cloud Agent / laptop, tunnel:
+- Public `:8101` is open on the VCN security list + host iptables.
+- Prefer public URL from outside the VCN; private `10.0.1.10` may still hit host REJECT
+  from some peers — public IP works from ksg-main.
 
 ```bash
-ssh -i ~/.ssh/oci_console -N -L 18101:127.0.0.1:8101 ubuntu@129.153.192.75
-export IAC_BUS_URL=http://127.0.0.1:18101
+export IAC_BUS_URL=http://129.153.192.75:8101
 export IAC_BUS_TOKEN="$(ssh -i ~/.ssh/oci_console ubuntu@129.153.192.75 \
   "sudo grep ^BUS_API_TOKEN= /etc/iac-bus/iac-bus.env | cut -d= -f2")"
 ./scripts/bus_smoke.sh
 ```
 
-Inside the VCN, peers can use `http://10.0.1.10:8101` once security lists allow TCP 8101 on the subnet.
-
 ## Verified
 
 - [x] `systemctl is-active iac-bus` → active
-- [x] Local `/health` on VM
-- [x] Tunneled `./scripts/bus_smoke.sh` (post/list/claim/ack/nack/session)
-- [x] `osl-oc-agent` `scripts/iac_bus_demo.mjs` posted `progress` to `ops`
+- [x] Public `/health` + bearer-gated `/bus/messages`
+- [x] `./scripts/bus_smoke.sh` (unique queues; post/list/claim/ack/nack/session)
+- [x] `osl-oc-agent` full claim/ack demo from prod host
+- [x] Prod chat auto-announce: `osl-oc-agent-prod|done|[completed] … bus-engage-ok`
 
 ## Redeploy
 

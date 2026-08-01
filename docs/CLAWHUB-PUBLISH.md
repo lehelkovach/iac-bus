@@ -47,13 +47,14 @@ Treat any third-party Clawhub or skill registry as untrusted until verified:
   different non-conflicting port.
 - Dogfood notes include the test session ID and queue worker ID.
 
-## Status (2026-08-01)
+## Status (2026-08-01 — engaged)
 
 | Gate | Status |
 |------|--------|
-| Local pytest + bus_smoke | **Pass** (32 pytest; smoke green) |
-| Live OCI deploy `:8101` | **Pass** — `iac-bus-6c58` / `129.153.192.75` (tunnel) |
-| osl-oc-agent dogfood | **Partial** — `iac_bus_demo.mjs` posted progress; full claim/ack from a live chat session still pending |
-| ClawHub publish | **Hold** until a real multi-worker chat session uses `bus.*` tools end-to-end |
+| Local pytest + bus_smoke | **Pass** (32 pytest; unique-queue smoke green) |
+| Live OCI deploy `:8101` | **Pass** — `iac-bus-6c58` / `129.153.192.75` (public + bearer) |
+| osl-oc-agent dogfood | **Pass** — full `iac_bus_demo` claim/ack + prod chat auto-announce to `ops` |
+| ClawHub publish | **Ready to publish skill package** (HTTP-only). Still optional for Stage-1 product. |
 
-**When to publish:** after Stage-2 needs 2+ workers (mobile farm, parallel Cursor spawns, or survey farm). Publishing earlier just creates registry noise — Stage-1 single-agent autofill does not need the bus.
+**Publish now if** you want the OpenClaw skill discoverable for multi-agent ops.  
+**Skip if** you are only shipping single-agent autofill — the bus is engaged for your stack either way via env + auto-announce.
