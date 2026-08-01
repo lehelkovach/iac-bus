@@ -28,16 +28,25 @@ fi
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  cat > "${ENV_FILE}" <<'EOF'
+  cat > "${ENV_FILE}" <<EOF
 # Inter-Agent Communication Bus environment
 BUS_HOST=0.0.0.0
-BUS_PORT=8091
+BUS_PORT=${BUS_PORT:-8101}
 # BUS_API_TOKEN=replace-me
 BUS_MAX_MESSAGES=500
 BUS_RETENTION_SECONDS=3600
 BUS_QUEUE_LEASE_SECONDS=60
 BUS_LOG_LEVEL=INFO
 EOF
+else
+  # Preserve token; honor BUS_PORT from the environment when redeploying.
+  if [[ -n "${BUS_PORT:-}" ]]; then
+    if grep -q '^BUS_PORT=' "${ENV_FILE}"; then
+      sed -i "s/^BUS_PORT=.*/BUS_PORT=${BUS_PORT}/" "${ENV_FILE}"
+    else
+      echo "BUS_PORT=${BUS_PORT}" >> "${ENV_FILE}"
+    fi
+  fi
 fi
 
 install -m 0644 "${SERVICE_SRC}" "${SERVICE_DST}"
