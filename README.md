@@ -89,6 +89,10 @@ BUS_API_TOKEN=devtoken BUS_PORT=8101 ./venv/bin/python server.py
 **Laptop + OCI push-deploy + inter-agent dogfood:** see
 [`docs/LOCAL-AND-OCI-SUITUP.md`](docs/LOCAL-AND-OCI-SUITUP.md) and live host notes in
 [`docs/OCI-LIVE.md`](docs/OCI-LIVE.md). OpenClaw skill: `skills/openclaw/`.
+Agents: root [`AGENTS.md`](AGENTS.md) (ingest first).
+
+**KeyChain (`key-chain-network`):** not a dependency of this repo yet. Grants/vault
+land later via KeyChain → IAC adapters; bus M0 stands alone. Details in suit-up §D.
 
 ## Deploy (systemd)
 ```bash

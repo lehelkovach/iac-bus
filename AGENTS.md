@@ -22,6 +22,27 @@ Integration tip is **`master`**. Branch from `master`; open PRs with base **`mas
 - Stable ops: `.AGENT/RUNBOOK.md` when present; otherwise `docs/LOCAL-AND-OCI-SUITUP.md`.
 - Cross-session state: uniquely named `.AGENT/handoffs/<task>.md` only when needed.
 - Git branches / PRs are the durable record — no shared action log.
+- Local multi-root + KeyChain timing: `docs/LOCAL-AND-OCI-SUITUP.md` §C–D.
+
+## KeyChain (`key-chain-network`) — **later, not now**
+
+**iac-bus does not depend on** [key-chain-network](https://github.com/lehelkovach/key-chain-network)
+for M0/M1 (pub/poll, queues, OpenClaw skill, OCI deploy).
+
+Dependency direction (when KeyChain lands):
+
+```text
+key-chain-network  →  adapters/iac  →  iac-bus HTTP API
+     (grants)            (later)         (transport — this repo)
+```
+
+- KeyChain owns **CapabilityGrant / HumanKey / vault / policy** — not message routing.
+- IAC owns **channels, queues, claim/ack** — not identity or credential grants.
+- Design kickstart lives on KeyChain branch `agent/keychain-2-kickstart` (see that
+  repo’s `docs/KEYCHAIN-2-KICKSTART.md`). `main` there is still a placeholder.
+
+**Do not** add a pip/git submodule dependency on KeyChain while shipping bus M0.
+Optional sibling checkout for reading design only — see suit-up §D.
 
 ## Deploy notes
 

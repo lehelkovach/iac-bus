@@ -7,11 +7,16 @@ dev VM, dogfood inter-agent messages — without burning Cloud Agent quota on ro
 
 ---
 
-## A. Local laptop (primary)
+## A. Local laptop (primary) — launch a Cursor project on this repo
+
+**Minimum (bus alone):** clone → venv → run → smoke. No other repo required.
 
 ```bash
+# suggested layout (sibling checkouts under one parent)
+mkdir -p ~/code/ksg-stack && cd ~/code/ksg-stack
 git clone https://github.com/lehelkovach/iac-bus.git
 cd iac-bus
+git checkout master   # or your feature branch; tip is master
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 BUS_API_TOKEN=devtoken BUS_PORT=8101 ./venv/bin/python server.py
@@ -20,6 +25,10 @@ export IAC_BUS_URL=http://127.0.0.1:8101 IAC_BUS_TOKEN=devtoken
 ./scripts/bus_smoke.sh
 pytest -q
 ```
+
+**Cursor:** File → Open Folder → `~/code/ksg-stack/iac-bus` (or Open Workspace if you
+add siblings — §C). Agents should ingest root **`AGENTS.md`** first (commands,
+KeyChain timing, deploy). Then this doc + `docs/OCI-LIVE.md`.
 
 OpenClaw skill sources: `skills/openclaw/` (+ `docs/OPENCLAW_SKILL.md`).
 Point a second local agent / curl loop at the same URL for two-party dogfood:
@@ -80,7 +89,43 @@ Hotfix scripts default `REF=master` (`scripts/hotfix-pull.sh`).
 
 ---
 
-## C. Dogfood inter-agent communication
+## C. Optional multi-root workspace (local Cursor)
+
+For OSLO ↔ bus dogfood later, siblings under one parent (not required for bus-only):
+
+```bash
+cd ~/code/ksg-stack
+# already have iac-bus/
+git clone https://github.com/lehelkovach/osl-oc-agent.git          # tip: dev
+git clone https://github.com/lehelkovach/knowshowgo.git             # tip: dev
+git clone https://github.com/lehelkovach/knowshowgo-client.git      # tip: dev
+# optional design-only (see §D) — do not pip-install into iac-bus:
+# git clone https://github.com/lehelkovach/key-chain-network.git
+```
+
+Open a **multi-root** workspace (folders: `iac-bus`, optionally `osl-oc-agent`, …).
+Prompting agents in that workspace: start with **iac-bus `AGENTS.md`** for bus work;
+do not assume KeyChain packages exist.
+
+---
+
+## D. KeyChain network — **later** (not a bus dependency)
+
+| Question | Answer |
+|---|---|
+| Does iac-bus depend on key-chain-network **now**? | **No.** Ship M0 without it. |
+| When? | After bus pub/poll + claim/ack are dogfooded; KeyChain adds `adapters/iac` that **call** this API. |
+| Who depends on whom? | `key-chain-network` → IAC (transport). Not the reverse. |
+| What does KeyChain own? | Grants, HumanKey, vault, policy — **not** queues/channels. |
+| Design branch | `agent/keychain-2-kickstart` in [key-chain-network](https://github.com/lehelkovach/key-chain-network) (`docs/KEYCHAIN-2-KICKSTART.md`). `main` is still a stub. |
+
+**Local launch expectation:** opening only `iac-bus` should run server + pytest with zero
+KeyChain code. If you clone KeyChain as a sibling, treat it as **read-only design input**
+until a dedicated KeyChain↔IAC adapter PR lands (in the KeyChain repo, not here).
+
+---
+
+## E. Dogfood inter-agent communication
 
 1. **Local first** — two curl/Python clients or OpenClaw skill against `127.0.0.1:8101`.
 2. **Live bus** — `IAC_BUS_URL=http://129.153.192.75:8101` + token from VM env; `./scripts/bus_smoke.sh`.
@@ -88,10 +133,11 @@ Hotfix scripts default `REF=master` (`scripts/hotfix-pull.sh`).
    wire claim/ack tools or load `skills/openclaw` — product Gate A still outranks bus features.
 4. **Spawn helpers** — `scripts/spawn-cursor-agents.py` (prefer Bearer-auth fix from open PRs
    before relying on it).
+5. **KeyChain** — out of scope for this dogfood path until adapters exist (§D).
 
 ---
 
-## D. Cloud Agent budget
+## F. Cloud Agent budget
 
 Use Cloud only for: OCI SSH/deploy secrets, live smoke against `129.153.192.75`, or
 broken Actions. Routine bus code + pytest → **local Cursor**. Continuity = git PR + this

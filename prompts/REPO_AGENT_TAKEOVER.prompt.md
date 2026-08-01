@@ -12,11 +12,12 @@ Take over work on `lehelkovach/iac-bus` without losing context, and continue
 execution from the latest documented state.
 
 ## First-Read Files (in order)
-1. `README.md`
-2. `docs/ACP_PROTOCOL_V2.md`
-3. `docs/FULL_DEV_PLAN.md`
-4. `docs/TESTING_STRATEGY.md`
+1. `AGENTS.md` (commands, KeyChain timing — **no dep on key-chain-network for M0**)
+2. `docs/LOCAL-AND-OCI-SUITUP.md` (local Cursor launch + OCI dogfood)
+3. `README.md`
+4. `docs/OCI-LIVE.md` (live host `129.153.192.75:8101`)
 5. `docs/AGENT_TASKS.md` (canonical active task queue)
+6. Then as needed: `docs/ACP_PROTOCOL_V2.md`, `docs/FULL_DEV_PLAN.md`, `docs/TESTING_STRATEGY.md`
 
 ## Required Branch/PR Review (before execution)
 Before writing code or running deployments, review what was already completed in

@@ -55,6 +55,9 @@ Primary outcome: safe delegation in multi-agent organizations.
 - approval checkpoints for sensitive actions
 - escalation rules and authority boundaries
 - policy engine integration pattern (OPA-style decision point)
+- **KeyChain adapters (external):** [key-chain-network](https://github.com/lehelkovach/key-chain-network)
+  calls IAC for transport (`adapters/iac`); this repo does **not** vendor KeyChain.
+  See `AGENTS.md` and suit-up §D — not required for v0.1/v0.2.
 
 ### Exit Criteria
 - unauthorized control paths blocked by tests
