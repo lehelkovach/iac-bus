@@ -42,6 +42,51 @@ def test_post_requires_auth(monkeypatch):
     assert resp.status_code == 201
 
 
+def test_bus_endpoints_require_auth_when_token_configured(monkeypatch):
+    server = _load_server(monkeypatch, token="secret")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/bus/messages").status_code == 401
+    assert client.post("/bus/queues/claim", json={"queue": "work", "worker": "agent-a"}).status_code == 401
+
+    headers = {"Authorization": "Bearer secret"}
+    assert client.get("/bus/messages", headers=headers).status_code == 200
+    assert client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a"},
+        headers=headers,
+    ).status_code == 204
+
+
+def test_message_envelope_validation(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    resp = client.post(
+        "/bus/messages",
+        json={"protocol": "iac-bus/1.1", "channel": "ops", "type": "progress", "message": "ok"},
+    )
+    assert resp.status_code == 201
+    msg = resp.get_json()["message"]
+    assert msg["protocol"] == "iac-bus/1.1"
+    assert msg["channel"] == "ops"
+    assert msg["type"] == "progress"
+
+    cases = [
+        ({"protocol": "iac-bus/9.9", "message": "bad"}, "protocol"),
+        ({"channel": "", "message": "bad"}, "channel"),
+        ({"type": "", "message": "bad"}, "type"),
+    ]
+    for payload, expected_detail in cases:
+        resp = client.post("/bus/messages", json=payload)
+        assert resp.status_code == 400
+        details = resp.get_json()["details"]
+        assert any(expected_detail in detail for detail in details)
+
+
 def test_since_id_filters(monkeypatch):
     server = _load_server(monkeypatch, token="")
     server._bus_messages.clear()
@@ -95,6 +140,85 @@ def test_queue_claim_and_ack(monkeypatch):
         json={"queue": "work", "worker": "agent-a"},
     )
     assert claim.status_code == 204
+
+
+def test_queue_nack_requeues_message(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    posted = client.post("/bus/messages", json={"queue": "work", "message": "task"}).get_json()["message"]
+    claimed = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a"},
+    ).get_json()["message"]
+
+    nack = client.post(
+        "/bus/queues/nack",
+        json={
+            "queue": "work",
+            "message_id": posted["id"],
+            "worker": "agent-a",
+            "lease_id": claimed["lease_id"],
+            "requeue": True,
+        },
+    )
+    assert nack.status_code == 200
+    assert nack.get_json()["message"]["status"] == "pending"
+
+    claimed_again = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-b"},
+    )
+    assert claimed_again.status_code == 200
+    assert claimed_again.get_json()["message"]["id"] == posted["id"]
+
+
+def test_queue_ack_rejects_lease_mismatch_and_double_ack(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    posted = client.post("/bus/messages", json={"queue": "work", "message": "task"}).get_json()["message"]
+    claimed = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a"},
+    ).get_json()["message"]
+
+    wrong_lease = client.post(
+        "/bus/queues/ack",
+        json={
+            "queue": "work",
+            "message_id": posted["id"],
+            "worker": "agent-a",
+            "lease_id": "not-the-lease",
+        },
+    )
+    assert wrong_lease.status_code == 409
+    assert wrong_lease.get_json()["error"] == "lease id mismatch"
+
+    ack = client.post(
+        "/bus/queues/ack",
+        json={
+            "queue": "work",
+            "message_id": posted["id"],
+            "worker": "agent-a",
+            "lease_id": claimed["lease_id"],
+        },
+    )
+    assert ack.status_code == 200
+
+    double_ack = client.post(
+        "/bus/queues/ack",
+        json={
+            "queue": "work",
+            "message_id": posted["id"],
+            "worker": "agent-a",
+            "lease_id": claimed["lease_id"],
+        },
+    )
+    assert double_ack.status_code == 404
+    assert double_ack.get_json()["error"] == "message not found"
 
 
 def test_queue_lease_expires(monkeypatch):

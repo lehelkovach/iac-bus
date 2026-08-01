@@ -77,6 +77,26 @@ def test_orchestration_step_status_valid():
     validator.validate(payload)
 
 
+def test_message_envelope_fields_validate():
+    validator = _message_validator()
+    validator.validate(
+        {
+            "protocol": "iac-bus/1.1",
+            "channel": "ops",
+            "type": "progress",
+            "message": "working",
+        }
+    )
+
+    for payload in (
+        {"protocol": "iac-bus/9.9", "message": "bad"},
+        {"channel": "", "message": "bad"},
+        {"type": "", "message": "bad"},
+    ):
+        with pytest.raises(ValidationError):
+            validator.validate(payload)
+
+
 def test_orchestration_job_message_invalid():
     validator = _message_validator()
     payload = {

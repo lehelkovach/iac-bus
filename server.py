@@ -39,6 +39,7 @@ BUS_MAX_MESSAGES = int(os.environ.get("BUS_MAX_MESSAGES", "500"))
 BUS_RETENTION_SECONDS = int(os.environ.get("BUS_RETENTION_SECONDS", "3600"))
 BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
 
+SUPPORTED_PROTOCOLS = {"iac-bus/1.0", "iac-bus/1.1"}
 STATUS_PUBLISHED = "published"
 STATUS_PENDING = "pending"
 STATUS_LEASED = "leased"
@@ -79,9 +80,19 @@ def _normalize_message_payload(data):
     protocol = data.get("protocol")
     if protocol is not None and not isinstance(protocol, str):
         errors.append("protocol must be string")
+    elif isinstance(protocol, str):
+        protocol = protocol.strip()
+        if not protocol:
+            errors.append("protocol must be non-empty")
+        elif protocol not in SUPPORTED_PROTOCOLS:
+            errors.append(f"protocol must be one of {', '.join(sorted(SUPPORTED_PROTOCOLS))}")
     channel = data.get("channel", "default")
     if not isinstance(channel, str):
         errors.append("channel must be string")
+    else:
+        channel = channel.strip()
+        if not channel:
+            errors.append("channel must be non-empty")
     sender = data.get("sender", "agent")
     if not isinstance(sender, str):
         errors.append("sender must be string")
@@ -97,6 +108,10 @@ def _normalize_message_payload(data):
     msg_type = data.get("type", "event")
     if msg_type is not None and not isinstance(msg_type, str):
         errors.append("type must be string")
+    elif isinstance(msg_type, str):
+        msg_type = msg_type.strip()
+        if not msg_type:
+            errors.append("type must be non-empty")
     conversation_id = data.get("conversation_id")
     if conversation_id is not None and not isinstance(conversation_id, str):
         errors.append("conversation_id must be string")

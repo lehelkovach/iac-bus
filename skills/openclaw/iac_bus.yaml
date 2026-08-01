@@ -1,0 +1,245 @@
+name: iac_bus
+description: Coordinate OpenClaw-style agents through the IAC Bus REST API.
+version: 0.1.0
+runtime:
+  type: python
+  entrypoint: iac_bus.py
+config:
+  base_url:
+    type: string
+    required: true
+    env: IAC_BUS_URL
+    description: IAC Bus base URL, e.g. http://127.0.0.1:8101
+  token:
+    type: string
+    required: false
+    secret: true
+    env: IAC_BUS_TOKEN
+    description: Bearer token matching BUS_API_TOKEN when auth is enabled.
+policy:
+  intended_use: Coordination, handoff, progress reporting, and queue-based work leasing between authorized agents.
+  restricted_use: Do not publish secrets, credentials, private user data, or use the bus as a covert exfiltration channel.
+  execution: HTTP-only skill; it does not expose shell, filesystem, or process execution.
+tools:
+  - name: iac_bus_health
+    description: Check IAC Bus health.
+    method: GET
+    path: /health
+    timeout_seconds: 10
+
+  - name: iac_bus_post_message
+    description: Post a message envelope to the bus.
+    method: POST
+    path: /bus/messages
+    timeout_seconds: 10
+    body:
+      protocol: "{{protocol}}"
+      channel: "{{channel}}"
+      sender: "{{sender}}"
+      type: "{{type}}"
+      message: "{{message}}"
+      conversation_id: "{{conversation_id}}"
+      reply_to: "{{reply_to}}"
+      recipient: "{{recipient}}"
+      group: "{{group}}"
+      queue: "{{queue}}"
+      priority: "{{priority}}"
+      headers: "{{headers}}"
+      ttl_seconds: "{{ttl_seconds}}"
+    parameters:
+      message:
+        description: JSON-compatible payload or text.
+      channel:
+        type: string
+        default: default
+      sender:
+        type: string
+        default: agent
+      type:
+        type: string
+        default: event
+      protocol:
+        type: string
+        default: iac-bus/1.0
+      conversation_id:
+        type: string
+        required: false
+      reply_to:
+        type: string
+        required: false
+      recipient:
+        type: string
+        required: false
+      group:
+        type: string
+        required: false
+      queue:
+        type: string
+        default: ""
+      priority:
+        type: integer
+        default: 0
+      headers:
+        type: object
+        required: false
+      ttl_seconds:
+        type: number
+        required: false
+
+  - name: iac_bus_list_messages
+    description: List or poll bus messages.
+    method: GET
+    path: /bus/messages
+    timeout_seconds: 10
+    parameters:
+      channel:
+        type: string
+        required: false
+      since_id:
+        type: string
+        required: false
+      limit:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 200
+      include_queue:
+        type: boolean
+        default: false
+
+  - name: iac_bus_queue_claim
+    description: Claim one pending message from a named queue.
+    method: POST
+    path: /bus/queues/claim
+    timeout_seconds: 10
+    body:
+      queue: "{{queue}}"
+      worker: "{{worker}}"
+      lease_seconds: "{{lease_seconds}}"
+    parameters:
+      queue:
+        type: string
+      worker:
+        type: string
+      lease_seconds:
+        type: number
+        required: false
+
+  - name: iac_bus_queue_ack
+    description: Acknowledge and remove a leased queue message.
+    method: POST
+    path: /bus/queues/ack
+    timeout_seconds: 10
+    body:
+      queue: "{{queue}}"
+      message_id: "{{message_id}}"
+      worker: "{{worker}}"
+      lease_id: "{{lease_id}}"
+    parameters:
+      queue:
+        type: string
+      message_id:
+        type: string
+      worker:
+        type: string
+      lease_id:
+        type: string
+
+  - name: iac_bus_queue_nack
+    description: Nack a leased queue message and optionally requeue it.
+    method: POST
+    path: /bus/queues/nack
+    timeout_seconds: 10
+    body:
+      queue: "{{queue}}"
+      message_id: "{{message_id}}"
+      worker: "{{worker}}"
+      lease_id: "{{lease_id}}"
+      requeue: "{{requeue}}"
+    parameters:
+      queue:
+        type: string
+      message_id:
+        type: string
+      worker:
+        type: string
+      lease_id:
+        type: string
+      requeue:
+        type: boolean
+        default: true
+
+  - name: iac_bus_session_progress
+    description: Post a session progress convention message.
+    method: POST
+    path: /bus/messages
+    timeout_seconds: 10
+    body:
+      channel: "session.{{session_id}}"
+      sender: "{{sender}}"
+      type: progress
+      conversation_id: "{{session_id}}"
+      message:
+        text: "{{message}}"
+        session_id: "{{session_id}}"
+        metadata: "{{metadata}}"
+    parameters:
+      session_id:
+        type: string
+      sender:
+        type: string
+      message:
+        type: string
+      metadata:
+        type: object
+        required: false
+
+  - name: iac_bus_session_blocker
+    description: Post a session blocker convention message.
+    method: POST
+    path: /bus/messages
+    timeout_seconds: 10
+    body:
+      channel: "session.{{session_id}}"
+      sender: "{{sender}}"
+      type: blocker
+      conversation_id: "{{session_id}}"
+      message:
+        text: "{{message}}"
+        session_id: "{{session_id}}"
+        metadata: "{{metadata}}"
+    parameters:
+      session_id:
+        type: string
+      sender:
+        type: string
+      message:
+        type: string
+      metadata:
+        type: object
+        required: false
+
+  - name: iac_bus_session_done
+    description: Post a session done convention message.
+    method: POST
+    path: /bus/messages
+    timeout_seconds: 10
+    body:
+      channel: "session.{{session_id}}"
+      sender: "{{sender}}"
+      type: done
+      conversation_id: "{{session_id}}"
+      message:
+        text: "{{message}}"
+        session_id: "{{session_id}}"
+        metadata: "{{metadata}}"
+    parameters:
+      session_id:
+        type: string
+      sender:
+        type: string
+      message:
+        type: string
+      metadata:
+        type: object
+        required: false
