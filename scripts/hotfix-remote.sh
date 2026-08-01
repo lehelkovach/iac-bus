@@ -8,7 +8,7 @@ fi
 
 TARGET="$1"
 SSH_KEY="${2:-}"
-REF="${REF:-main}"
+REF="${REF:-master}"
 REPO_OWNER="${REPO_OWNER:-lehelkovach}"
 REPO_NAME="${REPO_NAME:-iac-bus}"
 

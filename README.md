@@ -82,8 +82,13 @@ curl http://<BUS_IP>:8091/health
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
-BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+BUS_API_TOKEN=devtoken BUS_PORT=8101 ./venv/bin/python server.py
+./scripts/bus_smoke.sh   # needs IAC_BUS_URL + IAC_BUS_TOKEN
 ```
+
+**Laptop + OCI push-deploy + inter-agent dogfood:** see
+[`docs/LOCAL-AND-OCI-SUITUP.md`](docs/LOCAL-AND-OCI-SUITUP.md) and live host notes in
+[`docs/OCI-LIVE.md`](docs/OCI-LIVE.md). OpenClaw skill: `skills/openclaw/`.
 
 ## Deploy (systemd)
 ```bash

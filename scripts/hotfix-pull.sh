@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_OWNER="${REPO_OWNER:-lehelkovach}"
 REPO_NAME="${REPO_NAME:-iac-bus}"
-REF="${REF:-main}"
+REF="${REF:-master}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/iac-bus}"
 TMP_DIR="${TMP_DIR:-/tmp/iac-bus-hotfix}"
 
