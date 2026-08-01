@@ -466,3 +466,7 @@ Implementation planning and execution scaffolding are documented in:
 - [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
 - [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.
 - [prompts/README.md](prompts/README.md) - agent prompt file conventions and usage.
+
+## Live OCI
+
+See `docs/OCI-LIVE.md`.

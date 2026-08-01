@@ -52,16 +52,21 @@ if ssh_cmd "test -d ${remote_dir_q}/.git"; then
   echo "Remote Git checkout found; pulling ${BRANCH}"
   ssh_cmd "cd ${remote_dir_q} && git fetch origin && git checkout ${branch_q} && git pull --ff-only origin ${branch_q}"
 else
-  echo "No remote Git checkout found; rsyncing local checkout"
-  # shellcheck disable=SC2086
-  rsync -az --delete ${RSYNC_OPTS} \
-    --exclude ".git" \
-    --exclude ".pytest_cache" \
-    --exclude "__pycache__" \
-    --exclude "venv" \
-    --exclude ".venv" \
-    -e "ssh ${SSH_OPTS}" \
-    "${ROOT_DIR}/" "${REMOTE}:${REMOTE_DIR}/"
+  if command -v rsync >/dev/null 2>&1; then
+    echo "No remote Git checkout found; rsyncing local checkout"
+    # shellcheck disable=SC2086
+    rsync -az --delete ${RSYNC_OPTS} \
+      --exclude ".git" \
+      --exclude ".pytest_cache" \
+      --exclude "__pycache__" \
+      --exclude "venv" \
+      --exclude ".venv" \
+      -e "ssh ${SSH_OPTS}" \
+      "${ROOT_DIR}/" "${REMOTE}:${REMOTE_DIR}/"
+  else
+    echo "rsync unavailable; cloning public GitHub branch ${BRANCH} on remote"
+    ssh_cmd "git clone --branch ${branch_q} https://github.com/lehelkovach/iac-bus.git ${remote_dir_q}"
+  fi
 fi
 
 echo "Running deploy.sh with BUS_PORT=${BUS_PORT}"
