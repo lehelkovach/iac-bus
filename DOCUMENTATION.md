@@ -161,12 +161,25 @@ sudo systemctl status iac-bus.service
 `deploy.sh` installs the service in `/opt/iac-bus` and writes configuration to
 `/etc/iac-bus/iac-bus.env`.
 
-### Gunicorn (optional)
-The repository includes `gunicorn` in `requirements.txt`. You can run:
+### Gunicorn (recommended for anything but local development)
+The repository includes `gunicorn` in `requirements.txt`. Run it with exactly
+one worker process:
 
 ```bash
-BUS_API_TOKEN=devtoken ./venv/bin/gunicorn -b 0.0.0.0:8091 server:app
+BUS_API_TOKEN=devtoken ./venv/bin/gunicorn \
+  --workers 1 --threads 32 --bind 127.0.0.1:8091 \
+  --timeout 120 --graceful-timeout 30 server:app
 ```
+
+**The single worker is mandatory, not a tuning choice.** All bus state lives in
+process memory, so each additional worker serves its own separate queues,
+cursors, and jobs. Connection keep-alive pins a client to one process, which
+hides the problem until connections rebalance: with `--workers 4`, a job created
+on one connection was invisible to 19 of 20 fresh connections. Threads provide
+concurrency safely because they share that state.
+
+`scripts/bus_conformance.py` includes a required check for this, so a
+misconfigured deployment fails verification rather than corrupting a swarm.
 
 ### Provision a new OCI dev VM (using `OCI_*` secrets)
 Use:
@@ -210,6 +223,9 @@ The repository includes a planning/scaffolding set for ACP evolution:
 - `docs/ACP_PROTOCOL_V2.md` - strict ACP v2 draft protocol contract (identity, messages, channels, endpoints, state semantics).
 - `docs/sql/ACP_V2_SCHEMA.sql` - draft Postgres schema for durable message routing history and agent coordination state.
 - `docs/FULL_DEV_PLAN.md` - canonical full development plan combining merged PR intent and ACP roadmap strategy.
+- `docs/SWARM_DEV_PLAN.md` - phased plan for multi-agent swarming, with a measured baseline and tracked capability gaps.
+- `docs/SWARM_TESTING_PLAN.md` - swarm test layers, tooling, acceptance thresholds, and CI gates.
+- `docs/OCI_HOSTING_PLAN.md` - running the bus as an OCI service: topology, phases, release process, and runbooks.
 - `docs/ACP_DEV_PLAN.md` - consolidated MVP-first architecture and delivery plan.
 - `docs/ROADMAP.md` - versioned roadmap from foundational to advanced capabilities.
 - `docs/TESTING_STRATEGY.md` - TDD/BDD cascading gates and definition of done.
@@ -308,16 +324,57 @@ python3 -m venv venv
 ./venv/bin/pytest
 ```
 
+`tests/swarm/` starts a real HTTP bus and drives it with concurrent agents. It
+also carries a gap ledger: one strict-xfail test per missing swarm capability,
+so an implemented feature turns its test into a failure until the marker is
+removed. See `docs/SWARM_TESTING_PLAN.md`.
+
+### Swarm harness
+Drives a bus with many concurrent agents and fails on invariant violations
+(lost work, duplicate delivery, dependency violations):
+
+```bash
+python3 scripts/swarm_harness.py all --embedded
+python3 scripts/swarm_harness.py flood --bus-url "$BUS_URL" --token "$BUS_API_TOKEN" \
+  --workers 16 --tasks 500
+```
+
+### Deployment conformance
+Verifies a running deployment against the protocol contract and reports which
+optional swarm capabilities the build has:
+
+```bash
+python3 scripts/bus_conformance.py --bus-url "$BUS_URL" --token "$BUS_API_TOKEN" --slow
+```
+
+Both scripts exit non-zero on failure and are used as release gates in
+`docs/OCI_HOSTING_PLAN.md`.
+
 ## Troubleshooting
 - `401 Unauthorized`: check `BUS_API_TOKEN` and the `Authorization` header.
 - `400 message required`: ensure the POST body includes a non-empty `message`.
 - Empty message list: verify the `channel`, `since_id`, and retention settings.
 
 ## Limitations
-- Messages are stored only in memory; restarts clear all data.
+Measured against the current build; see `docs/SWARM_DEV_PLAN.md` for figures.
+
+- Messages are stored only in memory; restarts clear all data, including pending
+  queue tasks, leases, and orchestration jobs.
 - If you run multiple processes (for example, gunicorn with multiple workers),
-  each process maintains its own message list.
-- There is no built-in persistence or fine-grained access control.
+  each process maintains its own message list. Run exactly one worker.
+- Retention prunes the shared buffer without regard for message status, so when
+  `BUS_MAX_MESSAGES` is reached, pending queue tasks are deleted silently along
+  with old chatter. Size the buffer for in-flight work plus chatter.
+- Throughput is a fixed shared budget of roughly 330 operations/second because
+  every request serializes on one lock. More agents add latency, not capacity.
+- Per-request cost grows with retained messages, from about 1.3 ms at 500
+  resident messages to 7-11 ms at 50,000.
+- `wait_seconds` is accepted but ignored, so reads never block.
+- `priority` is stored but not used when claiming; work is claimed oldest-first.
+- The `agent`, `metadata`, and `ref` fields used in the README collaboration
+  playbook are not stored; only `sender` is.
+- There is no built-in persistence, presence registry, or fine-grained access
+  control.
 
 ## Roadmap
 All items below are **Planned** unless explicitly marked otherwise.

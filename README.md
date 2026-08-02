@@ -85,6 +85,32 @@ python3 -m venv venv
 BUS_API_TOKEN=devtoken ./venv/bin/python server.py
 ```
 
+## Swarm Tooling
+
+Verify a bus and exercise it with many concurrent agents:
+
+```bash
+# Drive a swarm against a bus (or --embedded to start a throwaway one)
+python3 scripts/swarm_harness.py all --embedded
+
+# Check a deployment against the protocol contract
+python3 scripts/bus_conformance.py --bus-url "$BUS_URL" --token "$BUS_API_TOKEN" --slow
+```
+
+Both exit non-zero on failure, so they can gate a deployment. `bus_client.py` is
+the shared client they use, and is the recommended starting point for agent
+integrations. See [docs/SWARM_TESTING_PLAN.md](docs/SWARM_TESTING_PLAN.md).
+
+Known limits when running a swarm against the current build, measured in
+[docs/SWARM_DEV_PLAN.md](docs/SWARM_DEV_PLAN.md):
+
+- Capacity is a shared budget of roughly 330 operations/second; extra agents add
+  latency, not throughput. Keep swarms at or below 16 active members per bus.
+- `BUS_MAX_MESSAGES` must cover in-flight work plus chatter. When the buffer
+  fills, pending queue tasks are evicted silently.
+- All state is in memory, so a restart discards pending work, leases, and jobs.
+- Run exactly one worker process. Multiple processes each keep their own state.
+
 ## Deploy (systemd)
 ```bash
 sudo ./deploy.sh
@@ -434,6 +460,9 @@ Implementation planning and execution scaffolding are documented in:
 - [prompts/REPO_AGENT_TAKEOVER.prompt.md](prompts/REPO_AGENT_TAKEOVER.prompt.md) - first-read takeover prompt for any new agent continuing work.
 - [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md) - canonical active task queue for takeover agents.
 - [docs/FULL_DEV_PLAN.md](docs/FULL_DEV_PLAN.md) - canonical full development plan assimilating merged PR intent and ACP planning.
+- [docs/SWARM_DEV_PLAN.md](docs/SWARM_DEV_PLAN.md) - phased plan for multi-agent swarming, with a measured baseline and the current capability gaps.
+- [docs/SWARM_TESTING_PLAN.md](docs/SWARM_TESTING_PLAN.md) - how swarm behavior is verified, from local runs to the hosted service.
+- [docs/OCI_HOSTING_PLAN.md](docs/OCI_HOSTING_PLAN.md) - running the bus as an OCI service: topology, release process, and operating rules.
 - [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
 - [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
 - [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.

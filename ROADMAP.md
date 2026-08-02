@@ -37,11 +37,25 @@ low-latency delivery over polling now and push transport later.
 - [ ] HA and clustering.
 
 ## Testing Plan
+- [x] Concurrency tests for exactly-once claim, lease takeover, and fencing.
+- [x] Swarm harness with flood/fanout/DAG scenarios and invariant checks.
+- [x] Deployment conformance suite with capability probes.
 - [ ] Expand tests for validation errors and lease edge cases.
 - [ ] Integration tests for leader/subordinate workflows.
-- [ ] Load tests for retention and queue throughput.
+- [ ] Restart and backpressure injection (blocked on durable state).
+
+See `docs/SWARM_TESTING_PLAN.md` for the full swarm test strategy.
 
 ## Deployment Plan
 - [ ] OCI VM baseline (Ubuntu + systemd).
 - [ ] TLS termination (nginx/caddy) and firewall rules.
 - [ ] Rolling upgrade and hotfix workflow.
+
+See `docs/OCI_HOSTING_PLAN.md` for the phased hosting plan and operating rules.
+
+## Swarming
+
+Multi-agent swarming has its own phased plan in `docs/SWARM_DEV_PLAN.md`, with a
+measured baseline and nine tracked capability gaps. Progress is visible by
+running `python3 -m pytest tests/swarm -q`: each gap is a strict-xfail test that
+turns into a failure once the capability lands.

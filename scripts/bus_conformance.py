@@ -259,6 +259,37 @@ def run_suite(args) -> Suite:
 
     suite.check("ack from a non-owner is rejected", check_stale_lease_rejected)
 
+    def check_single_coordination_domain() -> Optional[str]:
+        """Every connection must reach the same coordination state.
+
+        All bus state lives in process memory, so running more than one worker
+        process shards it: each process answers with its own queues, cursors,
+        and jobs. Connection keep-alive pins a client to one process and hides
+        this, so the probe deliberately opens fresh connections.
+        """
+        marker = client.post(message=f"domain-probe-{run}", channel=channel, sender="conformance")
+        misses = 0
+        attempts = 12
+        for _ in range(attempts):
+            resp = requests.get(
+                f"{args.bus_url.rstrip('/')}/bus/messages",
+                params={"channel": channel, "limit": 200},
+                headers={**_auth_headers(args.token), "Connection": "close"},
+                timeout=args.timeout,
+            )
+            ids = [m["id"] for m in resp.json().get("messages", [])]
+            if marker["id"] not in ids:
+                misses += 1
+        if misses:
+            return (
+                f"{misses}/{attempts} fresh connections could not see a just-posted message; "
+                f"the deployment is serving from more than one copy of the state "
+                f"(run exactly one worker process)"
+            )
+        return None
+
+    suite.check("all connections share one coordination state", check_single_coordination_domain)
+
     def check_validation() -> Optional[str]:
         cases = [
             ({"channel": channel}, "missing message"),
