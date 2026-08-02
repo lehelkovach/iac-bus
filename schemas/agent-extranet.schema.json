@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iac-bus.org/schemas/agent-extranet.schema.json",
+  "title": "IAC Bus Agent Extranet Protocol Objects",
+  "description": "Transport-neutral authority, action, approval, trace, and receipt objects for authenticated agent extranets.",
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "PrincipalRef": {
+      "type": "object",
+      "required": ["principal_id", "kind"],
+      "properties": {
+        "principal_id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["human", "organization", "service"]},
+        "issuer": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "AgentRef": {
+      "type": "object",
+      "required": ["agent_id", "controller_principal_id", "key_id"],
+      "properties": {
+        "agent_id": {"type": "string", "minLength": 1},
+        "controller_principal_id": {"type": "string", "minLength": 1},
+        "key_id": {"type": "string", "minLength": 1},
+        "endpoint": {"type": "string", "format": "uri"},
+        "identity_provider": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "KsgRef": {
+      "type": "object",
+      "required": ["object_id"],
+      "properties": {
+        "object_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "relation": {"enum": ["concept", "procedure", "claim", "evidence", "trace"]}
+      },
+      "additionalProperties": false
+    },
+    "TraceContext": {
+      "type": "object",
+      "required": ["traceparent"],
+      "properties": {
+        "traceparent": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+        },
+        "tracestate": {"type": "string"},
+        "causal_parent_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "Signature": {
+      "type": "object",
+      "required": ["algorithm", "key_id", "value"],
+      "properties": {
+        "algorithm": {"enum": ["Ed25519"]},
+        "key_id": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1},
+        "created_at": {"$ref": "#/$defs/Timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "StatusRef": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {
+        "url": {"type": "string", "format": "uri"},
+        "version": {"type": "string", "minLength": 1},
+        "checked_at": {"$ref": "#/$defs/Timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "CapabilityGrant": {
+      "type": "object",
+      "required": [
+        "schema",
+        "grant_id",
+        "issuer",
+        "subject_agent_id",
+        "capabilities",
+        "resources",
+        "issued_at",
+        "expires_at",
+        "nonce",
+        "status_ref",
+        "digest",
+        "signature"
+      ],
+      "properties": {
+        "schema": {"const": "iac.authority-grant/0.1"},
+        "grant_id": {"type": "string", "minLength": 1},
+        "issuer": {"$ref": "#/$defs/PrincipalRef"},
+        "subject_agent_id": {"type": "string", "minLength": 1},
+        "parent_grant_digest": {"$ref": "#/$defs/Digest"},
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "max_uses": {"type": "integer", "minimum": 1},
+            "max_cost": {"type": "number", "minimum": 0},
+            "allowed_hours_utc": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "integer", "minimum": 0, "maximum": 23}
+            },
+            "requires_approval_for": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        },
+        "issued_at": {"$ref": "#/$defs/Timestamp"},
+        "expires_at": {"$ref": "#/$defs/Timestamp"},
+        "nonce": {"type": "string", "minLength": 16},
+        "status_ref": {"$ref": "#/$defs/StatusRef"},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "signature": {"$ref": "#/$defs/Signature"}
+      },
+      "additionalProperties": false
+    },
+    "AuthorityRef": {
+      "type": "object",
+      "required": ["grant_digest", "status_ref", "verifier", "checked_at"],
+      "properties": {
+        "grant_digest": {"$ref": "#/$defs/Digest"},
+        "status_ref": {"$ref": "#/$defs/StatusRef"},
+        "verifier": {"type": "string", "minLength": 1},
+        "checked_at": {"$ref": "#/$defs/Timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "ActionProposal": {
+      "type": "object",
+      "required": [
+        "schema",
+        "proposal_id",
+        "principal_id",
+        "actor_agent_id",
+        "capability",
+        "resource",
+        "input_digest",
+        "risk",
+        "requested_at",
+        "expires_at",
+        "authority",
+        "trace",
+        "digest"
+      ],
+      "properties": {
+        "schema": {"const": "iac.action-proposal/0.1"},
+        "proposal_id": {"type": "string", "minLength": 1},
+        "principal_id": {"type": "string", "minLength": 1},
+        "actor_agent_id": {"type": "string", "minLength": 1},
+        "capability": {"type": "string", "minLength": 1},
+        "resource": {"type": "string", "minLength": 1},
+        "input_digest": {"$ref": "#/$defs/Digest"},
+        "risk": {"enum": ["low", "moderate", "high", "critical"]},
+        "requested_at": {"$ref": "#/$defs/Timestamp"},
+        "expires_at": {"$ref": "#/$defs/Timestamp"},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "authority": {"$ref": "#/$defs/AuthorityRef"},
+        "semantic_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/KsgRef"}
+        },
+        "trace": {"$ref": "#/$defs/TraceContext"},
+        "digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "PolicyDecision": {
+      "type": "object",
+      "required": [
+        "schema",
+        "decision_id",
+        "proposal_digest",
+        "policy_id",
+        "effect",
+        "requires_approval",
+        "reasons",
+        "evaluated_at",
+        "digest"
+      ],
+      "properties": {
+        "schema": {"const": "iac.policy-decision/0.1"},
+        "decision_id": {"type": "string", "minLength": 1},
+        "proposal_digest": {"$ref": "#/$defs/Digest"},
+        "policy_id": {"type": "string", "minLength": 1},
+        "effect": {"enum": ["allow", "deny"]},
+        "requires_approval": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "evaluated_at": {"$ref": "#/$defs/Timestamp"},
+        "digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "ApprovalRecord": {
+      "type": "object",
+      "required": [
+        "schema",
+        "approval_id",
+        "proposal_digest",
+        "approver",
+        "decision",
+        "decided_at",
+        "expires_at",
+        "digest",
+        "signature"
+      ],
+      "properties": {
+        "schema": {"const": "iac.approval-record/0.1"},
+        "approval_id": {"type": "string", "minLength": 1},
+        "proposal_digest": {"$ref": "#/$defs/Digest"},
+        "approver": {"$ref": "#/$defs/PrincipalRef"},
+        "decision": {"enum": ["approved", "denied"]},
+        "conditions": {"type": "object"},
+        "decided_at": {"$ref": "#/$defs/Timestamp"},
+        "expires_at": {"$ref": "#/$defs/Timestamp"},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "signature": {"$ref": "#/$defs/Signature"}
+      },
+      "additionalProperties": false
+    },
+    "DeliveryReceipt": {
+      "type": "object",
+      "required": [
+        "schema",
+        "receipt_id",
+        "message_digest",
+        "bus_event_id",
+        "status",
+        "recorded_at",
+        "digest"
+      ],
+      "properties": {
+        "schema": {"const": "iac.delivery-receipt/0.1"},
+        "receipt_id": {"type": "string", "minLength": 1},
+        "message_digest": {"$ref": "#/$defs/Digest"},
+        "bus_event_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["accepted", "delivered", "failed", "expired", "duplicate"]},
+        "recipient_agent_id": {"type": "string", "minLength": 1},
+        "recorded_at": {"$ref": "#/$defs/Timestamp"},
+        "error_code": {"type": "string"},
+        "digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "ExecutionReceipt": {
+      "type": "object",
+      "required": [
+        "schema",
+        "receipt_id",
+        "proposal_digest",
+        "actor_agent_id",
+        "capability",
+        "resource",
+        "authority_digest",
+        "policy_decision_digest",
+        "status",
+        "result_digest",
+        "started_at",
+        "finished_at",
+        "trace",
+        "digest",
+        "signature"
+      ],
+      "properties": {
+        "schema": {"const": "iac.execution-receipt/0.1"},
+        "receipt_id": {"type": "string", "minLength": 1},
+        "proposal_digest": {"$ref": "#/$defs/Digest"},
+        "actor_agent_id": {"type": "string", "minLength": 1},
+        "capability": {"type": "string", "minLength": 1},
+        "resource": {"type": "string", "minLength": 1},
+        "authority_digest": {"$ref": "#/$defs/Digest"},
+        "policy_decision_digest": {"$ref": "#/$defs/Digest"},
+        "approval_digest": {"$ref": "#/$defs/Digest"},
+        "status": {"enum": ["blocked", "cancelled", "failed", "succeeded"]},
+        "result_digest": {"$ref": "#/$defs/Digest"},
+        "side_effect_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "started_at": {"$ref": "#/$defs/Timestamp"},
+        "finished_at": {"$ref": "#/$defs/Timestamp"},
+        "trace": {"$ref": "#/$defs/TraceContext"},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "signature": {"$ref": "#/$defs/Signature"}
+      },
+      "additionalProperties": false
+    },
+    "ExtranetEnvelope": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "message_id",
+        "message_type",
+        "from_agent",
+        "to_agent_id",
+        "sent_at",
+        "trace",
+        "authority",
+        "payload",
+        "payload_digest",
+        "signature"
+      ],
+      "properties": {
+        "protocol": {"const": "iac-extranet/0.1"},
+        "message_id": {"type": "string", "minLength": 1},
+        "message_type": {
+          "enum": [
+            "work.offer",
+            "work.claim",
+            "work.progress",
+            "action.propose",
+            "policy.decision",
+            "approval.record",
+            "work.result",
+            "work.cancel",
+            "receipt.delivery",
+            "receipt.execution",
+            "revocation.notice",
+            "heartbeat"
+          ]
+        },
+        "from_agent": {"$ref": "#/$defs/AgentRef"},
+        "to_agent_id": {"type": "string", "minLength": 1},
+        "conversation_id": {"type": "string", "minLength": 1},
+        "reply_to": {"type": "string", "minLength": 1},
+        "sent_at": {"$ref": "#/$defs/Timestamp"},
+        "expires_at": {"$ref": "#/$defs/Timestamp"},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "trace": {"$ref": "#/$defs/TraceContext"},
+        "authority": {"$ref": "#/$defs/AuthorityRef"},
+        "semantic_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/KsgRef"}
+        },
+        "payload": {"type": "object"},
+        "payload_digest": {"$ref": "#/$defs/Digest"},
+        "signature": {"$ref": "#/$defs/Signature"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
