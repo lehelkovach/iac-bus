@@ -75,13 +75,20 @@ def test_read_can_block_until_a_message_arrives(bus):
     overhead, and it adds up to half a poll interval of latency to every
     handoff.
     """
-    client = bus.client()
+    import requests
+
     started = time.perf_counter()
-    client.poll(channel="swarm.quiet-channel", limit=10)
-    # Not a real assertion of blocking yet: the call returns immediately today.
+    resp = requests.get(
+        f"{bus.url}/bus/messages",
+        params={"channel": "swarm.quiet-channel", "wait_seconds": 2, "limit": 10},
+        timeout=10,
+    )
     elapsed = time.perf_counter() - started
-    assert elapsed >= 1.0, (
-        "GET /bus/messages returned immediately; server-side long poll is not implemented"
+
+    assert resp.status_code == 200
+    assert elapsed >= 1.5, (
+        f"wait_seconds=2 returned after {elapsed:.3f}s with nothing to report; "
+        f"the parameter is accepted and ignored, so agents must busy-poll"
     )
 
 

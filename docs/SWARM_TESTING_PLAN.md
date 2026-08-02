@@ -265,7 +265,7 @@ specific.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 
-# full local verification, roughly 40 seconds
+# full local verification, roughly 30 seconds
 python3 -m pytest -q
 python3 scripts/swarm_harness.py all --embedded
 
