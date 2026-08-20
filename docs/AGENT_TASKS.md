@@ -1,25 +1,21 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-05-27 UTC  
+Last updated: 2026-08-20 UTC  
 Purpose: single file a new agent reads to continue work safely.
 
 ## Current Blocker
 
 ### B-001: OCI provisioning secrets not injected in runtime
-- Severity: blocker
+- Severity: partial (API auth present; VM create still blocked)
 - Affects: `scripts/provision-oci-dev-vm.py` and OCI auto-provision workflow
-- Missing env vars in active cloud agent sessions:
-  - `OCI_TENANCY_OCID`
-  - `OCI_USER_OCID`
-  - `OCI_FINGERPRINT`
-  - `OCI_REGION`
-  - `OCI_COMPARTMENT_OCID`
+- Cursor Cloud secret names (`_ID`) are accepted as aliases of `_OCID`.
+- Present in this environment: `OCI_TENANCY_ID`, `OCI_USER_ID`, `OCI_FINGERPRINT`, `OCI_REGION`, `OCI_COMPARTMENT_ID`, `OCI_PRIVATE_KEY`.
+- Still missing for VM create:
   - `OCI_SUBNET_OCID`
   - `OCI_IMAGE_OCID`
   - `OCI_SSH_PUBLIC_KEY`
-  - `OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`
-- Evidence: provisioning command exits early with missing required OCI env var.
+- API key PEM secret name: `OCI_PRIVATE_KEY` (full BEGIN/END block).
 
 ## Next Tasks (ready when blocker clears)
 
