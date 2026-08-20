@@ -3,11 +3,11 @@
 Provision a new Oracle Cloud VM for IAC Bus development using OCI_* secrets.
 
 Required env vars:
-  OCI_TENANCY_OCID
-  OCI_USER_OCID
+  OCI_TENANCY_OCID (or OCI_TENANCY_ID)
+  OCI_USER_OCID (or OCI_USER_ID)
   OCI_FINGERPRINT
   OCI_REGION
-  OCI_COMPARTMENT_OCID
+  OCI_COMPARTMENT_OCID (or OCI_COMPARTMENT_ID)
   OCI_SUBNET_OCID
   OCI_IMAGE_OCID
   OCI_SSH_PUBLIC_KEY
@@ -39,13 +39,6 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-try:
-    import oci
-except ImportError as exc:  # pragma: no cover - runtime dependency check
-    raise SystemExit(
-        "Missing python package 'oci'. Install with: python3 -m pip install oci"
-    ) from exc
-
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.environ.get(name, default)
@@ -54,10 +47,20 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return value.strip() if isinstance(value, str) else value
 
 
-def _require(name: str) -> str:
-    value = _env(name)
+def _first_env(*names: str, default: Optional[str] = None) -> Optional[str]:
+    for name in names:
+        value = _env(name)
+        if value:
+            return value
+    return default
+
+
+def _require(*names: str) -> str:
+    value = _first_env(*names)
     if not value:
-        raise SystemExit(f"Missing required environment variable: {name}")
+        raise SystemExit(
+            f"Missing required environment variable: {' or '.join(names)}"
+        )
     return value
 
 
@@ -90,8 +93,8 @@ def _resolve_private_key() -> str:
 
 def _build_config() -> Dict[str, str]:
     return {
-        "tenancy": _require("OCI_TENANCY_OCID"),
-        "user": _require("OCI_USER_OCID"),
+        "tenancy": _require("OCI_TENANCY_OCID", "OCI_TENANCY_ID"),
+        "user": _require("OCI_USER_OCID", "OCI_USER_ID"),
         "fingerprint": _require("OCI_FINGERPRINT"),
         "region": _require("OCI_REGION"),
         "key_content": _resolve_private_key(),
@@ -161,10 +164,17 @@ def _write_output_env(output: Dict[str, str]) -> None:
 
 
 def main() -> int:
+    try:
+        import oci
+    except ImportError as exc:  # pragma: no cover - runtime dependency check
+        raise SystemExit(
+            "Missing python package 'oci'. Install with: python3 -m pip install oci"
+        ) from exc
+
     config = _build_config()
-    compartment_id = _require("OCI_COMPARTMENT_OCID")
-    subnet_id = _require("OCI_SUBNET_OCID")
-    image_id = _require("OCI_IMAGE_OCID")
+    compartment_id = _require("OCI_COMPARTMENT_OCID", "OCI_COMPARTMENT_ID")
+    subnet_id = _require("OCI_SUBNET_OCID", "OCI_SUBNET_ID")
+    image_id = _require("OCI_IMAGE_OCID", "OCI_IMAGE_ID")
     ssh_public_key = _require("OCI_SSH_PUBLIC_KEY")
 
     shape = _env("OCI_SHAPE", "VM.Standard.E2.1.Micro")

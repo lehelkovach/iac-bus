@@ -86,7 +86,7 @@ Do **not** provision or deploy unless the human explicitly requests it.
 
 Dev VM deploy may need: `KSG_DEV_VM_HOST`, `KSG_DEV_VM_USER`, `KSG_DEV_VM_KEY`, optional `KSG_DEV_VM_PORT`, `KSG_DEV_VM_APP_DIR`, `BUS_API_TOKEN`.
 
-OCI provision may need: `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_REGION`, `OCI_COMPARTMENT_OCID`, `OCI_SUBNET_OCID`, `OCI_IMAGE_OCID`, `OCI_SSH_PUBLIC_KEY`, and `OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`.
+OCI provision may need: `OCI_TENANCY_OCID` (or `OCI_TENANCY_ID`), `OCI_USER_OCID` (or `OCI_USER_ID`), `OCI_FINGERPRINT`, `OCI_REGION`, `OCI_COMPARTMENT_OCID` (or `OCI_COMPARTMENT_ID`), `OCI_SUBNET_OCID`, `OCI_IMAGE_OCID`, `OCI_SSH_PUBLIC_KEY`, and `OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`. Cursor Cloud secrets in this environment use the `_ID` names; save the API signing PEM as `OCI_PRIVATE_KEY`.
 
 If secrets are missing, stop and report the blocker (see `docs/AGENT_TASKS.md`).
 
