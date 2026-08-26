@@ -31,6 +31,12 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
+Long-poll with `wait_seconds` (capped by `BUS_WAIT_SECONDS_MAX`, default 30):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>&wait_seconds=10" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
 Queue messages are excluded from polling by default. To include them:
 ```bash
 curl "http://<BUS_IP>:8091/bus/messages?include_queue=true" \
@@ -66,6 +72,31 @@ curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
 curl http://<BUS_IP>:8091/health
 ```
 
+Returns `status=ok` plus ops gauges: `uptime_seconds`, `messages_retained`,
+`queue_pending_count`, `queue_leased_count`, `jobs_active`, `version`,
+`git_sha` (when set), and `process_rss_bytes` when available.
+
+### Metrics (JSON)
+```bash
+curl http://<BUS_IP>:8091/metrics
+```
+
+Counters (`messages_posted`, `messages_polled`, `queue_claims`/`acks`/`nacks`,
+`orchestration_jobs`/`dispatches`), gauges (`messages_in_memory`,
+`jobs_in_memory`, `leased_messages`), and rolling avg timers
+(`post_latency_ms_avg`, `poll_latency_ms_avg`, `claim_latency_ms_avg`).
+`/health` and `/metrics` do not require auth.
+
+### Register agent (ephemeral stub)
+```bash
+curl -X POST http://<BUS_IP>:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"handle":"agent:cursor.iac-bus.0@web","role":"worker"}'
+```
+
+In-memory only — durable ACP registry is a follow-up (Stage 2–3).
+
 ## Environment
 
 | Variable | Default | Purpose |
@@ -76,7 +107,10 @@ curl http://<BUS_IP>:8091/health
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
-| `BUS_LOG_LEVEL` | `INFO` | Log level |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll |
+| `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
+| `BUS_VERSION` | `0.1.0` | Reported in `/health` |
+| `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |
 
 ## Local Run
 ```bash
@@ -121,13 +155,19 @@ chmod +x scripts/deploy-dev-vm.sh
 ./scripts/deploy-dev-vm.sh
 ```
 
-Live debugging logs on dev VM:
+Live debugging on dev VM:
 ```bash
+# structured request logs + debug bus events
 ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+
+# ops endpoints (port 8091 on the VM)
+curl http://<VM_IP>:8091/health
+curl http://<VM_IP>:8091/metrics
 ```
 
 Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
-and the service auto-restarts on file changes via `watchmedo`.
+and the service auto-restarts on file changes via `watchmedo`. Structured request
+logs include `request_id`, `method`, `path`, `status`, and `duration_ms`.
 
 ### Provision a brand-new OCI VM using `OCI_*` secrets
 

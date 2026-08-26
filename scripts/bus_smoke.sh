@@ -38,13 +38,26 @@ need_cmd python3
 
 echo "Smoke target: ${BUS_URL}"
 
-# 1) health (no auth)
+# 1) health (no auth) — richer ops fields
 health="$(curl -fsS "${BUS_URL}/health" || true)"
 status="$(printf '%s' "${health}" | json_get 'd.get("status","")' || true)"
-if [[ "${status}" == "ok" ]]; then
-  ok "GET /health"
+uptime="$(printf '%s' "${health}" | json_get 'd.get("uptime_seconds","")' || true)"
+retained="$(printf '%s' "${health}" | json_get 'd.get("messages_retained","")' || true)"
+pending="$(printf '%s' "${health}" | json_get 'd.get("queue_pending_count","")' || true)"
+leased="$(printf '%s' "${health}" | json_get 'd.get("queue_leased_count","")' || true)"
+jobs="$(printf '%s' "${health}" | json_get 'd.get("jobs_active","")' || true)"
+if [[ "${status}" == "ok" && -n "${uptime}" && -n "${retained}" && -n "${pending}" && -n "${leased}" && -n "${jobs}" ]]; then
+  ok "GET /health (ops fields present)"
 else
   bad "GET /health (got: ${health:-<empty>})"
+fi
+
+# 1b) metrics endpoint
+metrics_code="$(curl -sS -o /tmp/iac-bus-metrics.json -w '%{http_code}' "${BUS_URL}/metrics" || true)"
+if [[ "${metrics_code}" == "200" ]]; then
+  ok "GET /metrics -> 200"
+else
+  bad "GET /metrics expected 200 got ${metrics_code}"
 fi
 
 # 2) post without token must 401 when token configured
@@ -103,6 +116,72 @@ if [[ "${claim_code}" == "204" ]]; then
   ok "POST /bus/queues/claim empty -> 204"
 else
   bad "POST /bus/queues/claim empty expected 204 got ${claim_code}"
+fi
+
+# 7) wait_seconds timeout returns empty within a bound
+wait_channel="smoke-wait-${CHANNEL}"
+wait_timing="$(
+  WAIT_CHANNEL="${wait_channel}" BUS_URL="${BUS_URL}" BUS_API_TOKEN="${BUS_API_TOKEN}" python3 - <<'PY'
+import json, time, urllib.request, os
+url = os.environ["BUS_URL"] + "/bus/messages?channel=" + os.environ["WAIT_CHANNEL"] + "&wait_seconds=1"
+req = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["BUS_API_TOKEN"]})
+started = time.time()
+with urllib.request.urlopen(req, timeout=5) as resp:
+    body = json.load(resp)
+elapsed = time.time() - started
+print(json.dumps({"count": len(body.get("messages", [])), "elapsed": round(elapsed, 3)}))
+PY
+)"
+wait_count="$(printf '%s' "${wait_timing}" | json_get 'd.get("count")')"
+wait_elapsed="$(printf '%s' "${wait_timing}" | json_get 'd.get("elapsed")')"
+if python3 -c "import sys; c=int('${wait_count}'); e=float('${wait_elapsed}'); sys.exit(0 if c==0 and 0.8<=e<=3.0 else 1)"; then
+  ok "GET /bus/messages?wait_seconds=1 timeout empty (${wait_elapsed}s)"
+else
+  bad "wait_seconds timeout expected empty in 0.8-3s got count=${wait_count} elapsed=${wait_elapsed}"
+fi
+
+# 8) orchestration happy path: job -> claim assignment -> step.status -> next assignment
+ORCH_JOB="smoke-orch-$$"
+orch_post="$(curl -fsS \
+  -X POST "${BUS_URL}/bus/messages" \
+  -H "${AUTH_HEADER}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"type\":\"orchestration.job\",\"sender\":\"smoke\",\"message\":{\"job\":{\"job_id\":\"${ORCH_JOB}\",\"steps\":[{\"id\":\"design\",\"queue\":\"smoke-orch\"},{\"id\":\"impl\",\"queue\":\"smoke-orch\",\"depends_on\":[{\"step_id\":\"design\"}]}]}}}")"
+orch_ok="$(printf '%s' "${orch_post}" | json_get 'd.get("success")')"
+claim_body="$(curl -fsS \
+  -X POST "${BUS_URL}/bus/queues/claim" \
+  -H "${AUTH_HEADER}" \
+  -H 'Content-Type: application/json' \
+  -d '{"queue":"smoke-orch","worker":"smoke-worker","lease_seconds":30}')"
+claim_step="$(printf '%s' "${claim_body}" | json_get 'd.get("message",{}).get("message",{}).get("step",{}).get("id","")')"
+claim_msg_id="$(printf '%s' "${claim_body}" | json_get 'd.get("message",{}).get("id","")')"
+claim_lease="$(printf '%s' "${claim_body}" | json_get 'd.get("message",{}).get("lease_id","")')"
+
+status_post="$(curl -fsS \
+  -X POST "${BUS_URL}/bus/messages" \
+  -H "${AUTH_HEADER}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"type\":\"orchestration.step.status\",\"sender\":\"smoke-worker\",\"message\":{\"job_id\":\"${ORCH_JOB}\",\"step_id\":\"design\",\"status\":\"completed\"}}")"
+status_ok="$(printf '%s' "${status_post}" | json_get 'd.get("success")')"
+
+# Ack the first assignment so the next claim can pick up impl
+curl -fsS \
+  -X POST "${BUS_URL}/bus/queues/ack" \
+  -H "${AUTH_HEADER}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"queue\":\"smoke-orch\",\"worker\":\"smoke-worker\",\"message_id\":\"${claim_msg_id}\",\"lease_id\":\"${claim_lease}\"}" >/dev/null
+
+next_claim="$(curl -fsS \
+  -X POST "${BUS_URL}/bus/queues/claim" \
+  -H "${AUTH_HEADER}" \
+  -H 'Content-Type: application/json' \
+  -d '{"queue":"smoke-orch","worker":"smoke-worker","lease_seconds":30}')"
+next_step="$(printf '%s' "${next_claim}" | json_get 'd.get("message",{}).get("message",{}).get("step",{}).get("id","")')"
+
+if [[ "${orch_ok}" == "True" && "${claim_step}" == "design" && "${status_ok}" == "True" && "${next_step}" == "impl" ]]; then
+  ok "orchestration job -> claim -> status -> next assignment"
+else
+  bad "orchestration happy path (orch_ok=${orch_ok} claim=${claim_step} status_ok=${status_ok} next=${next_step})"
 fi
 
 echo
