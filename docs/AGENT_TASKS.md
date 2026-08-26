@@ -1,25 +1,29 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-05-27 UTC  
+Last updated: 2026-08-26 UTC  
 Purpose: single file a new agent reads to continue work safely.
 
-## Current Blocker
+## Progress pointer
+See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge
+(`iac-bus.knowshowgo.com` → `129.153.192.75:8101`).
 
-### B-001: OCI provisioning secrets not injected in runtime
-- Severity: blocker
-- Affects: `scripts/provision-oci-dev-vm.py` and OCI auto-provision workflow
-- Missing env vars in active cloud agent sessions:
-  - `OCI_TENANCY_OCID`
-  - `OCI_USER_OCID`
-  - `OCI_FINGERPRINT`
-  - `OCI_REGION`
-  - `OCI_COMPARTMENT_OCID`
-  - `OCI_SUBNET_OCID`
-  - `OCI_IMAGE_OCID`
-  - `OCI_SSH_PUBLIC_KEY`
-  - `OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`
-- Evidence: provisioning command exits early with missing required OCI env var.
+## Current Blockers
+
+### B-001: Full OCI provision secret set incomplete in cloud agent
+- Severity: blocker for *new* VM provision
+- Missing typical OCI_* provision secrets (tenancy/user/fingerprint/…).
+- `OCI_COMPARTMENT_ID` + API signing key may be present; VM SSH deploy keys
+  (`IAC_BUS_PROD_KEY` / `KSG_DEV_VM_KEY`) are still required for CI deploy.
+
+### B-002: DNS for public edge
+- `iac-bus.knowshowgo.com` NXDOMAIN as of 2026-08-26 — create A → `129.153.192.75`.
+- Health today: `http://129.153.192.75:8101/health`.
+
+### B-003: Deploy SSH from this environment
+- Instance `iac-bus-6c58` is RUNNING; SSH with API PEM fails (expected).
+- Inject `IAC_BUS_PROD_KEY` (or `KSG_DEV_VM_KEY`) to enable `scripts/deploy-prod-vm.sh`.
+
 
 ## Next Tasks (ready when blocker clears)
 
