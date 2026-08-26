@@ -55,10 +55,24 @@ must be present for the generic coordination profile:
 2. reject message post without valid token
 3. read by channel filter
 4. read with `since_id`
-5. long-poll read with `wait_seconds`
+5. long-poll read with `wait_seconds` — **covered** (`tests/test_bus.py`, smoke)
 6. invalid `limit` and malformed input handling
-7. Slack bridge formatting in dry-run mode
-8. handoff metadata preservation end-to-end
+7. Slack bridge formatting in dry-run mode — planned
+8. handoff metadata preservation end-to-end — planned
+
+### Current local gate (L1 ops slice)
+Prove with:
+
+```bash
+BUS_PORT=8101 BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+BUS_PORT=8101 BUS_API_TOKEN=devtoken bash ./scripts/bus_smoke.sh
+./venv/bin/pytest -q
+```
+
+Smoke now also checks richer `/health` fields, `/metrics` 200, orchestration
+happy path (job → claim → step.status → next assignment), and bounded
+`wait_seconds` timeout. Pytest covers metrics increments, health gauges,
+wait_seconds timeout/early-return, and orchestration parallel dispatch.
 
 ## BDD Conventions
 Use Gherkin feature files with explicit Given/When/Then semantics.

@@ -67,8 +67,8 @@ logging, the event envelope is expected to expand with fields such as:
 | `parent_event_id` | string | Links interpretation/result events to source input |
 
 ## Authentication
-If `BUS_API_TOKEN` is set, all endpoints except `/health` require a bearer
-token header:
+If `BUS_API_TOKEN` is set, all endpoints except `/health` and `/metrics`
+require a bearer token header:
 
 ```
 Authorization: Bearer <token>
@@ -106,23 +106,48 @@ Query parameters:
 - `channel` (string, optional) - filter by channel
 - `since_id` (string, optional) - return messages after this ID
 - `limit` (int, optional, default: `50`, max: `200`)
+- `include_queue` (bool, optional, default: `false`)
+- `wait_seconds` (number, optional, default: `0`, capped by `BUS_WAIT_SECONDS_MAX`)
+  - long-poll: block until matching messages appear or timeout
 
 Response:
 - `200 OK` with `{"messages":[...]}`.
 
 Example:
 ```bash
-curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100" \
+curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100&wait_seconds=10" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
 ### GET /health
-Returns basic health status. This endpoint does not require authentication.
+Returns health plus ops gauges. Does not require authentication.
+Always includes `status=ok` when the process is serving.
+
+Fields include: `uptime_seconds`, `messages_retained`, `queue_pending_count`,
+`queue_leased_count`, `jobs_active`, `version`, `git_sha`, `process_rss_bytes`.
 
 Example:
 ```bash
 curl "http://127.0.0.1:8091/health"
 ```
+
+### GET /metrics
+JSON metrics for tuning and live debug. Does not require authentication.
+
+- counters: `messages_posted`, `messages_polled`, `queue_claims`, `queue_acks`,
+  `queue_nacks`, `orchestration_jobs`, `orchestration_dispatches`
+- gauges: `messages_in_memory`, `jobs_in_memory`, `leased_messages`
+- timers: rolling averages `post_latency_ms_avg`, `poll_latency_ms_avg`,
+  `claim_latency_ms_avg`
+
+Example:
+```bash
+curl "http://127.0.0.1:8091/metrics"
+```
+
+### POST /agents/register
+Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
+`agent_uuid` + `agent_handle`. Not durable across restarts.
 
 ## Configuration
 
@@ -133,7 +158,10 @@ curl "http://127.0.0.1:8091/health"
 | `BUS_API_TOKEN` | empty | Bearer token |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for long-poll `wait_seconds` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
+| `BUS_VERSION` | `0.1.0` | Version string in `/health` |
+| `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |
 
 ## Runtime Behavior
 - Messages are pruned on insert and on read.
@@ -142,6 +170,10 @@ curl "http://127.0.0.1:8091/health"
 - `limit` is capped at `200`.
 - `since_id` returns messages strictly after the matching ID if found; if the
   ID is not present, all messages for the query are returned.
+- `wait_seconds` long-polls until matching messages appear or the timeout
+  elapses (capped by `BUS_WAIT_SECONDS_MAX`).
+- Structured request logs include `request_id`, `method`, `path`, `status`, and
+  `duration_ms` (controlled by `BUS_LOG_LEVEL`).
 
 ## Deployment
 
@@ -189,7 +221,9 @@ The provisioning script prints the new VM host and can optionally trigger
 deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
 
 ## Operations
-- Logs are emitted to stdout using the configured `BUS_LOG_LEVEL`.
+- Structured request logs (`request_id`, `method`, `path`, `status`,
+  `duration_ms`) are emitted at INFO; bus/queue details at DEBUG via
+  `BUS_LOG_LEVEL`.
 - The systemd unit restarts on failure.
 - The service runs as `root` by default in the provided unit file.
 
@@ -197,12 +231,17 @@ deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
 - Dev service unit: `systemd/iac-bus-dev.service`
 - Hot-reload runner: `scripts/run-dev-hot-reload.sh`
 - Deployment helper: `scripts/deploy-dev-vm.sh`
-- CI/CD workflow: `.github/workflows/dev-deploy.yml`
+- CI/CD workflow: `.github/workflows/dev-deploy.yml` (test then deploy on
+  push to `dev`)
 
-Recommended log streaming command on the VM:
+Live-debug on the VM:
 ```bash
 sudo journalctl -u iac-bus-dev.service -f
+curl http://127.0.0.1:8091/health
+curl http://127.0.0.1:8091/metrics
 ```
+
+`BUS_LOG_LEVEL=DEBUG` is the default for `iac-bus-dev.service`.
 
 ## Planning Artifacts
 The repository includes a planning/scaffolding set for ACP evolution:

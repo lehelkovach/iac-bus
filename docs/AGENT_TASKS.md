@@ -1,7 +1,7 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-05-27 UTC  
+Last updated: 2026-08-26 UTC  
 Purpose: single file a new agent reads to continue work safely.
 
 ## Current Blocker
@@ -20,10 +20,25 @@ Purpose: single file a new agent reads to continue work safely.
   - `OCI_SSH_PUBLIC_KEY`
   - `OCI_PRIVATE_KEY` or `OCI_PRIVATE_KEY_B64`
 - Evidence: provisioning command exits early with missing required OCI env var.
+- Note: `KSG_DEV_VM_*` also absent in this session — local dogfood only for L1 ops slice.
 
-## Next Tasks (ready when blocker clears)
+## Completed Recently
 
-### T-001: Provision new OCI dev VM (high priority)
+### T-005: Implement `wait_seconds` long-poll behavior — DONE
+- `GET /bus/messages?wait_seconds=N` long-polls (capped by `BUS_WAIT_SECONDS_MAX`, default 30s)
+- Tests: timeout empty + early return on new message (`tests/test_bus.py`)
+- Smoke: bounded timeout check in `scripts/bus_smoke.sh`
+- Docs: README.md + DOCUMENTATION.md
+
+### Ops / observability ladder slice — DONE (this PR)
+- Richer `GET /health` gauges + `GET /metrics` JSON counters/gauges/timers
+- Structured request logging (`request_id`, method, path, status, duration_ms)
+- Ephemeral `POST /agents/register` stub (in-memory; durable registry still TODO)
+- Expanded smoke + pytest for metrics, health, orchestration parallel dispatch
+
+## Next Tasks
+
+### T-001: Provision new OCI dev VM (high priority) — blocked by B-001
 - Command:
   - `OCI_RUN_DEPLOY_AFTER_CREATE=true python3 scripts/provision-oci-dev-vm.py`
 - Expected output:
@@ -43,27 +58,21 @@ Purpose: single file a new agent reads to continue work safely.
 ### T-003: Verify runtime and logs
 - Commands:
   - `curl http://<VM_IP>:8091/health`
+  - `curl http://<VM_IP>:8091/metrics`
   - `ssh ... "sudo systemctl status iac-bus-dev.service"`
   - `ssh ... "sudo journalctl -u iac-bus-dev.service -n 100 --no-pager"`
 - Acceptance:
-  - health endpoint returns `status=ok`
-  - debug log lines visible
+  - health endpoint returns `status=ok` with ops fields
+  - debug/structured log lines visible
 
 ### T-004: Verify GitHub Actions autonomous flows
 - Workflows:
-  - `.github/workflows/dev-deploy.yml`
+  - `.github/workflows/dev-deploy.yml` (triggers on push to `dev`)
   - `.github/workflows/oci-provision-dev-vm.yml`
 - Acceptance:
   - test job passes
   - deploy/provision jobs execute successfully with secrets
-
-### T-005: Implement `wait_seconds` long-poll behavior
-- Target:
-  - `GET /bus/messages` supports long-poll timeout behavior
-- Tests:
-  - add integration tests for timeout and early-return on new message
-- Acceptance:
-  - tests pass and behavior documented
+- Note: create/publish `dev` branch if missing so hot-deploy CI can run.
 
 ### T-006: Start SQL-backed message ledger implementation (ACP v2)
 - Begin from:
@@ -74,7 +83,13 @@ Purpose: single file a new agent reads to continue work safely.
 - Acceptance:
   - initial persistence path behind feature flag or adapter layer
 
+### T-007: Durable agent registry (ACP Stage 2–3)
+- Replace ephemeral `POST /agents/register` with SQLite-backed registry
+- Add heartbeat / last_seen and parent/root relationships
+- Acceptance: registry survives restart; tests cover register + lookup
+
 ## Operational Notes for New Agent
 - First read `prompts/REPO_AGENT_TAKEOVER.prompt.md`.
 - Then read this file and execute top-down.
 - If blocker persists, do not proceed with fake VM provisioning status.
+- Local loop: `BUS_PORT=8101 BUS_API_TOKEN=devtoken` + `scripts/bus_smoke.sh` + `pytest -q`.

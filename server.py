@@ -5,11 +5,13 @@ Inter-Agent Communication Bus (IAC Bus).
 
 import logging
 import os
+import resource
 import threading
 import time
 import uuid
+from collections import deque
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 
 from orchestration import (
     JobSpec,
@@ -38,6 +40,9 @@ BUS_API_TOKEN = os.environ.get("BUS_API_TOKEN", "")
 BUS_MAX_MESSAGES = int(os.environ.get("BUS_MAX_MESSAGES", "500"))
 BUS_RETENTION_SECONDS = int(os.environ.get("BUS_RETENTION_SECONDS", "3600"))
 BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
+BUS_WAIT_SECONDS_MAX = int(os.environ.get("BUS_WAIT_SECONDS_MAX", "30"))
+BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0")
+BUS_GIT_SHA = os.environ.get("BUS_GIT_SHA", os.environ.get("GITHUB_SHA", ""))
 
 STATUS_PUBLISHED = "published"
 STATUS_PENDING = "pending"
@@ -46,10 +51,34 @@ STATUS_LEASED = "leased"
 # In-memory state
 _bus_messages = []
 _bus_lock = threading.Lock()
+_bus_new_message = threading.Event()
 
 # Orchestration state
 _jobs = {}
 _jobs_lock = threading.Lock()
+
+# Ephemeral agent registry stub (ACP Stage 3 hook — not durable yet)
+# TODO(ACP Stage 2–3): replace with durable agent identity registry (SQLite/Postgres).
+_agents = {}
+_agents_lock = threading.Lock()
+
+_STARTED_AT = time.time()
+
+# Observability metrics
+_metrics_lock = threading.Lock()
+_LATENCY_WINDOW = 100
+_metrics = {
+    "messages_posted": 0,
+    "messages_polled": 0,
+    "queue_claims": 0,
+    "queue_acks": 0,
+    "queue_nacks": 0,
+    "orchestration_jobs": 0,
+    "orchestration_dispatches": 0,
+    "post_latency_ms": deque(maxlen=_LATENCY_WINDOW),
+    "poll_latency_ms": deque(maxlen=_LATENCY_WINDOW),
+    "claim_latency_ms": deque(maxlen=_LATENCY_WINDOW),
+}
 
 
 def _require_auth():
@@ -63,15 +92,87 @@ def _require_auth():
 
 @app.before_request
 def _auth_middleware():
-    if request.path == "/health":
+    g.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    g.request_started = time.time()
+    if request.path in ("/health", "/metrics"):
         return None
     return _require_auth()
+
+
+@app.after_request
+def _request_logging(response):
+    started = getattr(g, "request_started", None)
+    duration_ms = round((time.time() - started) * 1000, 3) if started is not None else None
+    request_id = getattr(g, "request_id", "")
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_id=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id,
+        request.method,
+        request.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 def _parse_bool(value):
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _metric_inc(name, amount=1):
+    with _metrics_lock:
+        _metrics[name] = _metrics.get(name, 0) + amount
+
+
+def _metric_observe(name, value_ms):
+    with _metrics_lock:
+        _metrics[name].append(float(value_ms))
+
+
+def _metric_avg(samples):
+    if not samples:
+        return None
+    return round(sum(samples) / len(samples), 3)
+
+
+def _process_rss_bytes():
+    try:
+        # Linux: ru_maxrss is kilobytes; prefer current VmRSS from /proc when available.
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return int(parts[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports KB; macOS reports bytes.
+        if os.uname().sysname == "Darwin":
+            return int(usage)
+        return int(usage) * 1024
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def _queue_counts_locked(now=None):
+    now = now or time.time()
+    pending = 0
+    leased = 0
+    for message in _bus_messages:
+        if not message.get("queue"):
+            continue
+        status = message.get("status")
+        if status == STATUS_LEASED and message.get("lease_until", 0) > now:
+            leased += 1
+        elif status == STATUS_PENDING or (
+            status == STATUS_LEASED and message.get("lease_until", 0) <= now
+        ):
+            pending += 1
+    return pending, leased
 
 
 def _normalize_message_payload(data):
@@ -292,6 +393,7 @@ def _bus_add_message(payload):
             msg[key] = payload[key]
     with _bus_lock:
         _bus_messages.append(msg)
+    _bus_new_message.set()
     logger.debug(
         "bus_message_added id=%s channel=%s type=%s queue=%s status=%s sender=%s",
         msg["id"],
@@ -303,6 +405,23 @@ def _bus_add_message(payload):
     )
     _bus_prune()
     return msg
+
+
+def _filter_messages(channel, since_id, limit, include_queue):
+    _bus_prune()
+    with _bus_lock:
+        msgs = list(_bus_messages)
+    if channel:
+        msgs = [m for m in msgs if m["channel"] == channel]
+    if not include_queue:
+        msgs = [m for m in msgs if not m.get("queue")]
+    if since_id:
+        try:
+            idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
+            msgs = msgs[idx + 1:]
+        except StopIteration:
+            pass
+    return msgs[-limit:]
 
 
 def _claim_queue_message(queue, worker, lease_seconds):
@@ -374,6 +493,7 @@ def _ack_queue_message(queue, message_id, worker, lease_id, requeue):
 
 @app.route("/bus/messages", methods=["POST"])
 def bus_post_message():
+    started = time.time()
     data = request.get_json() or {}
     payload, errors = _normalize_message_payload(data)
     if errors:
@@ -383,6 +503,7 @@ def bus_post_message():
         error_msg, status_code = orch_error
         return jsonify({"error": error_msg}), status_code
     msg = _bus_add_message(payload)
+    _metric_inc("messages_posted")
     logger.debug(
         "bus_post_message accepted id=%s channel=%s type=%s sender=%s",
         msg["id"],
@@ -394,6 +515,7 @@ def bus_post_message():
         if orch_action["action"] == "job":
             with _jobs_lock:
                 payloads = _register_job_locked(orch_action["job_spec"])
+            _metric_inc("orchestration_jobs")
         else:
             with _jobs_lock:
                 job_entry = _jobs.get(orch_action["job_id"])
@@ -405,48 +527,68 @@ def bus_post_message():
                 )
         for assignment in payloads:
             _bus_add_message(assignment)
+        if payloads:
+            _metric_inc("orchestration_dispatches", len(payloads))
         logger.debug(
             "orchestration_dispatch processed action=%s payloads_enqueued=%s",
             orch_action["action"],
             len(payloads),
         )
+    _metric_observe("post_latency_ms", (time.time() - started) * 1000)
     return jsonify({"success": True, "message": msg}), 201
 
 
 @app.route("/bus/messages", methods=["GET"])
 def bus_get_messages():
+    started = time.time()
     channel = request.args.get("channel", "")
     since_id = request.args.get("since_id", "")
     limit = int(request.args.get("limit", "50"))
     include_queue = _parse_bool(request.args.get("include_queue", "false"))
+    wait_raw = request.args.get("wait_seconds", "0")
+    try:
+        wait_seconds = float(wait_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "wait_seconds must be number"}), 400
+    if wait_seconds < 0:
+        return jsonify({"error": "wait_seconds must be >= 0"}), 400
+    if wait_seconds > BUS_WAIT_SECONDS_MAX:
+        wait_seconds = float(BUS_WAIT_SECONDS_MAX)
     if limit > 200:
         limit = 200
-    _bus_prune()
-    with _bus_lock:
-        msgs = list(_bus_messages)
-    if channel:
-        msgs = [m for m in msgs if m["channel"] == channel]
-    if not include_queue:
-        msgs = [m for m in msgs if not m.get("queue")]
-    if since_id:
-        try:
-            idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
-            msgs = msgs[idx + 1:]
-        except StopIteration:
-            pass
+
+    deadline = time.time() + wait_seconds if wait_seconds > 0 else None
+    while True:
+        msgs = _filter_messages(channel, since_id, limit, include_queue)
+        if msgs or deadline is None:
+            break
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        _bus_new_message.clear()
+        # Re-check after clear to avoid missing a notify that raced with clear.
+        msgs = _filter_messages(channel, since_id, limit, include_queue)
+        if msgs:
+            break
+        _bus_new_message.wait(timeout=min(remaining, 0.25))
+
+    _metric_inc("messages_polled")
+    _metric_observe("poll_latency_ms", (time.time() - started) * 1000)
     logger.debug(
-        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s returned=%s",
+        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s wait_seconds=%s returned=%s",
         channel or "*",
         since_id or "",
         limit,
         include_queue,
-        len(msgs[-limit:]),
+        wait_seconds,
+        len(msgs),
     )
-    return jsonify({"messages": msgs[-limit:]})
+    return jsonify({"messages": msgs})
 
 
 @app.route("/bus/queues/claim", methods=["POST"])
 def bus_claim_queue_message():
+    started = time.time()
     data = request.get_json() or {}
     queue = data.get("queue", "")
     worker = data.get("worker", "")
@@ -461,8 +603,10 @@ def bus_claim_queue_message():
         if lease_seconds <= 0:
             return jsonify({"error": "lease_seconds must be > 0"}), 400
     msg = _claim_queue_message(queue.strip(), worker.strip(), lease_seconds)
+    _metric_observe("claim_latency_ms", (time.time() - started) * 1000)
     if not msg:
         return ("", 204)
+    _metric_inc("queue_claims")
     return jsonify({"message": msg})
 
 
@@ -492,6 +636,7 @@ def bus_ack_queue_message():
         return jsonify({"error": "message not found"}), 404
     if error:
         return jsonify({"error": error}), 409
+    _metric_inc("queue_acks")
     return jsonify({"success": True, "message": msg})
 
 
@@ -524,6 +669,7 @@ def bus_nack_queue_message():
         return jsonify({"error": "message not found"}), 404
     if error:
         return jsonify({"error": error}), 409
+    _metric_inc("queue_nacks")
     return jsonify({"success": True, "message": msg})
 
 
@@ -549,13 +695,111 @@ def bus_get_orchestration_ready(job_id):
     return jsonify({"steps": [step.to_dict() for step in ready]})
 
 
+@app.route("/agents/register", methods=["POST"])
+def agents_register():
+    """
+    Ephemeral agent registration stub (ACP Stage 3 hook).
+
+    TODO(ACP Stage 2–3): persist agent_uuid/handle in SQLite/Postgres registry,
+    support heartbeat, parent/root relationships, and durable identity.
+    """
+    data = request.get_json() or {}
+    handle = data.get("handle") or data.get("agent_handle") or "agent"
+    if not isinstance(handle, str) or not handle.strip():
+        return jsonify({"error": "handle required"}), 400
+    role = data.get("role", "worker")
+    if role is not None and not isinstance(role, str):
+        return jsonify({"error": "role must be string"}), 400
+    purpose = data.get("purpose", "")
+    if purpose is not None and not isinstance(purpose, str):
+        return jsonify({"error": "purpose must be string"}), 400
+
+    agent_uuid = uuid.uuid4().hex
+    now = time.time()
+    record = {
+        "agent_uuid": agent_uuid,
+        "agent_handle": handle.strip(),
+        "role": role or "worker",
+        "purpose": purpose or "",
+        "status": "active",
+        "registered_at": now,
+        "last_seen_at": now,
+        "ephemeral": True,
+    }
+    with _agents_lock:
+        _agents[agent_uuid] = record
+    logger.debug(
+        "agent_registered uuid=%s handle=%s role=%s",
+        agent_uuid,
+        record["agent_handle"],
+        record["role"],
+    )
+    return jsonify({"success": True, "agent": record}), 201
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "messages": len(_bus_messages)})
+    now = time.time()
+    with _bus_lock:
+        messages_retained = len(_bus_messages)
+        pending, leased = _queue_counts_locked(now)
+    with _jobs_lock:
+        jobs_active = len(_jobs)
+    rss = _process_rss_bytes()
+    payload = {
+        "status": "ok",
+        "messages": messages_retained,
+        "uptime_seconds": round(now - _STARTED_AT, 3),
+        "messages_retained": messages_retained,
+        "queue_pending_count": pending,
+        "queue_leased_count": leased,
+        "jobs_active": jobs_active,
+        "version": BUS_VERSION,
+        "git_sha": BUS_GIT_SHA or None,
+        "process_rss_bytes": rss,
+    }
+    return jsonify(payload)
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    now = time.time()
+    with _bus_lock:
+        messages_in_memory = len(_bus_messages)
+        _pending, leased = _queue_counts_locked(now)
+    with _jobs_lock:
+        jobs_in_memory = len(_jobs)
+    with _metrics_lock:
+        counters = {
+            "messages_posted": _metrics["messages_posted"],
+            "messages_polled": _metrics["messages_polled"],
+            "queue_claims": _metrics["queue_claims"],
+            "queue_acks": _metrics["queue_acks"],
+            "queue_nacks": _metrics["queue_nacks"],
+            "orchestration_jobs": _metrics["orchestration_jobs"],
+            "orchestration_dispatches": _metrics["orchestration_dispatches"],
+        }
+        timers = {
+            "post_latency_ms_avg": _metric_avg(list(_metrics["post_latency_ms"])),
+            "poll_latency_ms_avg": _metric_avg(list(_metrics["poll_latency_ms"])),
+            "claim_latency_ms_avg": _metric_avg(list(_metrics["claim_latency_ms"])),
+            "post_latency_ms_samples": len(_metrics["post_latency_ms"]),
+            "poll_latency_ms_samples": len(_metrics["poll_latency_ms"]),
+            "claim_latency_ms_samples": len(_metrics["claim_latency_ms"]),
+        }
+    return jsonify({
+        "counters": counters,
+        "gauges": {
+            "messages_in_memory": messages_in_memory,
+            "jobs_in_memory": jobs_in_memory,
+            "leased_messages": leased,
+        },
+        "timers": timers,
+    })
 
 
 if __name__ == "__main__":
     host = os.environ.get("BUS_HOST", "0.0.0.0")
     port = int(os.environ.get("BUS_PORT", "8091"))
-    logger.info("Starting IAC Bus on %s:%s", host, port)
+    logger.info("Starting IAC Bus on %s:%s version=%s git_sha=%s", host, port, BUS_VERSION, BUS_GIT_SHA or "unknown")
     app.run(host=host, port=port, threaded=True)
