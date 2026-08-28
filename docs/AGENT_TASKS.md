@@ -1,8 +1,11 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-08-26 UTC  
+Last updated: 2026-08-28 UTC  
 Purpose: single file a new agent reads to continue work safely.
+
+**TDD process:** [`docs/TDD-LADDER.md`](./TDD-LADDER.md). Influence A–F do not
+wait on this bus. L1 is on `dev` (#17); do not start L2 from `master`.
 
 ## Progress pointer
 See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge

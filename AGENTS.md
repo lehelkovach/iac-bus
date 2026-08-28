@@ -7,10 +7,12 @@ Public edge (intended): **`https://iac-bus.knowshowgo.com`** → OCI VM `iac-bus
 ## Ingest order
 
 1. This file (`AGENTS.md`)
-2. `docs/PROGRESS.md` (ladder status + active agent tracks)
-3. `docs/LOCAL-AND-OCI-SUITUP.md`
-4. `docs/DOGFOOD-LITMUS.md` — when coordinating parallel agents via the bus
-5. `docs/OCI-LIVE.md` / `OCI_DEPLOYMENT.md` — deploy / DNS / prod cutover
+2. [`.AGENT/CONTINUITY.md`](.AGENT/CONTINUITY.md)
+3. [`docs/TDD-LADDER.md`](docs/TDD-LADDER.md) — slice law; Influence A–F do **not** use this bus
+4. `docs/PROGRESS.md` (ladder status + active agent tracks)
+5. `docs/LOCAL-AND-OCI-SUITUP.md`
+6. `docs/DOGFOOD-LITMUS.md` — when coordinating parallel agents via the bus
+7. `docs/OCI-LIVE.md` / `OCI_DEPLOYMENT.md` — deploy / DNS / prod cutover
 
 ## Hard constraints
 
