@@ -1,8 +1,15 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-08-26 UTC  
+Last updated: 2026-08-28 UTC  
 Purpose: single file a new agent reads to continue work safely.
+
+**TDD process:** [`docs/TDD-LADDER.md`](./TDD-LADDER.md) · canonical
+`knowshowgo/docs/TDD-LADDER.md`. Influence A–F do **not** wait on this bus.
+Next stack merge is KSG composition S1, not L2.
+
+## Progress pointer
+See `docs/PROGRESS.md` (this `dev` tip) and `.AGENT/CONTINUITY.md`.
 
 ## Current Blocker
 

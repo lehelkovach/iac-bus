@@ -1,12 +1,19 @@
 # Agent instructions (iac-bus)
 
-Tip branch: `master`. Prefer local work. Do not touch Cloud/OCI unless the human explicitly asks.
+Tip branch: **`master` (release)**. Integration tip: **`dev` (hot-reload)**.
+`dev` is not `master`.
+
+Public edge (intended): `https://iac-bus.knowshowgo.com` — DNS/SSH may still
+be missing; do not invent success.
 
 ## Ingest order
 
 1. This file (`AGENTS.md`)
-2. `docs/LOCAL-AND-OCI-SUITUP.md`
-3. `docs/OCI-LIVE.md` or `OCI_DEPLOYMENT.md` — **only** if the task touches deploy/provision
+2. [`.AGENT/CONTINUITY.md`](.AGENT/CONTINUITY.md)
+3. [`docs/TDD-LADDER.md`](docs/TDD-LADDER.md) — how slices land; Influence A–F do not use this bus
+4. `docs/PROGRESS.md`
+5. `docs/LOCAL-AND-OCI-SUITUP.md`
+6. `docs/AGENT_TASKS.md`
 
 ## Hard constraints
 
@@ -35,6 +42,7 @@ Acceptance: smoke summary all green; `pytest -q` all green.
 
 | Need | Location |
 | --- | --- |
+| TDD / Influence boundary | `docs/TDD-LADDER.md`, `.AGENT/CONTINUITY.md` |
 | HTTP API / env vars | `README.md`, `DOCUMENTATION.md` |
 | Local + OCI suit-up | `docs/LOCAL-AND-OCI-SUITUP.md` |
 | Tests / gates | `docs/TESTING_STRATEGY.md` |
