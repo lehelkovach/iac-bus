@@ -1,0 +1,109 @@
+name: swarm-tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      verify_deployment:
+        description: "Also verify the deployed bus at BUS_URL"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+  push:
+    branches:
+      - master
+      - dev
+  pull_request:
+
+jobs:
+  swarm:
+    name: swarm coordination tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Unit, schema, and integration tests
+        run: python -m pytest -q --ignore=tests/swarm
+
+      # An XPASS here is a failure on purpose: it means a gap in
+      # docs/SWARM_DEV_PLAN.md was closed and its xfail marker should be
+      # removed in the same change.
+      - name: Swarm concurrency tests and gap ledger
+        run: python -m pytest tests/swarm -q
+
+      - name: Swarm harness (embedded bus)
+        run: python3 scripts/swarm_harness.py all --embedded --workers 8 --tasks 200 --json harness-report.json
+
+      - name: Conformance suite (embedded bus)
+        run: |
+          BUS_API_TOKEN=ci-token python3 server.py &
+          BUS_PID=$!
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8091/health >/dev/null && break
+            sleep 1
+          done
+          python3 scripts/bus_conformance.py \
+            --bus-url http://127.0.0.1:8091 --token ci-token --slow \
+            --json conformance-report.json && STATUS=0 || STATUS=$?
+          kill "$BUS_PID" || true
+          exit "$STATUS"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarm-reports
+          path: |
+            harness-report.json
+            conformance-report.json
+          if-no-files-found: ignore
+
+  verify-deployment:
+    name: verify deployed bus
+    runs-on: ubuntu-latest
+    needs: swarm
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_deployment == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Conformance against the deployment
+        env:
+          BUS_URL: ${{ secrets.BUS_URL }}
+          BUS_API_TOKEN: ${{ secrets.BUS_API_TOKEN }}
+        run: |
+          if [ -z "$BUS_URL" ]; then
+            echo "BUS_URL secret is not set; nothing to verify."
+            exit 1
+          fi
+          python3 scripts/bus_conformance.py --bus-url "$BUS_URL" --token "$BUS_API_TOKEN" --slow
+
+      - name: Smoke swarm against the deployment
+        env:
+          BUS_URL: ${{ secrets.BUS_URL }}
+          BUS_API_TOKEN: ${{ secrets.BUS_API_TOKEN }}
+        run: |
+          python3 scripts/swarm_harness.py flood \
+            --bus-url "$BUS_URL" --token "$BUS_API_TOKEN" \
+            --workers 4 --tasks 50

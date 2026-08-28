@@ -69,6 +69,46 @@ See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge
 - Acceptance:
   - tests pass and behavior documented
 
+### T-007: Close swarm gap S1 (agent-addressable envelope)
+- Problem:
+  - `agent`, `metadata`, and `ref` are dropped on post, so every example in the
+    README collaboration playbook loses identity and handoff context.
+- Scope:
+  - accept `agent` as canonical, keep `sender` as an alias, preserve
+    `metadata`/`ref`, validate the `type` taxonomy
+- Acceptance:
+  - remove the xfail markers from `test_agent_handle_survives_a_post` and
+    `test_handoff_metadata_survives_a_post`; both pass
+  - `scripts/bus_conformance.py` reports both S1 capabilities present
+- Reference: `docs/SWARM_DEV_PLAN.md` phase S1
+
+### T-008: Close swarm gap S3 (durable, prioritised work state)
+- Problem:
+  - retention deletes pending queue tasks to make room for chatter (measured:
+    250 of 300 tasks lost with a small buffer), state does not survive restart,
+    and `priority` is ignored when claiming
+- Scope:
+  - separate work storage from the broadcast buffer, backpressure instead of
+    silent eviction, priority ordering, SQLite persistence, lease recovery,
+    dead-letter queue
+- Acceptance:
+  - the three S3 xfail tests in `tests/swarm/test_swarm_gaps.py` pass unmarked
+  - a restart injected mid-flood loses no tasks
+- Reference: `docs/SWARM_DEV_PLAN.md` phase S3
+- Priority: highest of the swarm work; this is silent data loss
+
+### T-009: Harden the hosted service (OCI phase H1)
+- Scope:
+  - gunicorn with exactly one worker, dedicated service user, systemd
+    sandboxing, TLS termination, 8091 bound to loopback, token from Vault,
+    `BUS_MAX_MESSAGES` sized from the formula
+- Acceptance:
+  - conformance passes over HTTPS, plain 8091 unreachable externally, service
+    runs unprivileged
+- Reference: `docs/OCI_HOSTING_PLAN.md` phase H1
+- Note: independent of the blocker above for everything except provisioning a
+  fresh VM
+
 ### T-006: Start SQL-backed message ledger implementation (ACP v2)
 - Begin from:
   - `docs/sql/ACP_V2_SCHEMA.sql`
