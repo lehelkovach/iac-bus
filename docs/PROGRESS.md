@@ -1,6 +1,9 @@
 # IAC-Bus progress tracker
 
-_Last updated: 2026-08-26. Dated facts are readings, not standing promises._
+_Last updated: 2026-09-20. Dated facts are readings, not standing promises._
+
+> **Repo parked at L0 on 2026-09-20.** See `docs/PARKED.md`. Rows below are
+> historical; L1–L5 are frozen, not "not started".
 
 ## Ladder status
 

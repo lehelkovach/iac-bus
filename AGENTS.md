@@ -1,5 +1,11 @@
 # Agent instructions (iac-bus)
 
+> **PARKED (2026-09-20).** Read `docs/PARKED.md` first. The ladder (L1–L5),
+> OCI provisioning, DNS, and deploy-secret blockers are **not active work**.
+> Only maintenance is in scope: keep `pytest -q` and `scripts/bus_smoke.sh`
+> green. Do not open new feature branches against this repo without the
+> owner explicitly un-parking it.
+
 Tip branch: `master` (release). Integration tip: `dev` (hot-reload).  
 Public edge (intended): **`https://iac-bus.knowshowgo.com`** → OCI VM `iac-bus-6c58`
 (`129.153.192.75`, bus currently on **:8101**). DNS A record may still need creating.

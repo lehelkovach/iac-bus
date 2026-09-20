@@ -8,6 +8,8 @@ Purpose: single file a new agent reads to continue work safely.
 See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge
 (`iac-bus.knowshowgo.com` → `129.153.192.75:8101`).
 
+> **Parked 2026-09-20.** Blockers and tasks below are frozen. See `docs/PARKED.md`.
+
 ## Current Blockers
 
 ### B-001: Full OCI provision secret set incomplete in cloud agent

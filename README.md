@@ -1,5 +1,13 @@
 # Inter-Agent Communication Bus (IAC Bus)
 
+> **Status (2026-09-20): parked at M0.** The bus is complete and tested as a
+> lightweight HTTP pub/sub + work-leasing service. No sibling repo
+> (knowshowgo-client, truth-app, yolo-online-learner) consumes it, and the
+> M1–M5 ladder would re-implement what Redis Streams / NATS / Temporal and
+> GitHub PR workflows already provide. Do not resume the OCI/DNS/secrets
+> blockers or the ladder unless the trigger in
+> [docs/PARKED.md](docs/PARKED.md) is met. Keep `pytest -q` green; nothing else.
+
 Lightweight message bus for coordinating multiple agents over HTTP.
 
 ## Features
