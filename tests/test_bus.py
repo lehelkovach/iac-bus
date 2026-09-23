@@ -140,3 +140,50 @@ def test_poll_excludes_queue_by_default(monkeypatch):
     resp = client.get("/bus/messages?include_queue=true")
     data = resp.get_json()
     assert len(data["messages"]) == 2
+
+
+def test_since_id_pages_forward_without_loss(monkeypatch):
+    """A consumer paging with since_id must see every message exactly once,
+    even when more than `limit` arrive between polls (regression: the server
+    used to return the newest `limit` and drop the rest)."""
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+
+    first = client.post("/bus/messages", json={"channel": "c", "message": "m0"}).get_json()["message"]["id"]
+    for i in range(1, 8):
+        client.post("/bus/messages", json={"channel": "c", "message": f"m{i}"})
+
+    seen = []
+    cursor = first
+    while True:
+        body = client.get(f"/bus/messages?channel=c&since_id={cursor}&limit=3").get_json()
+        assert body["cursor_lost"] is False
+        seen.extend(m["message"] for m in body["messages"])
+        if not body["messages"]:
+            break
+        cursor = body["messages"][-1]["id"]
+        if not body["has_more"]:
+            break
+    assert seen == [f"m{i}" for i in range(1, 8)]
+
+
+def test_pruned_cursor_is_reported_not_silently_replayed(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+    client.post("/bus/messages", json={"channel": "c", "message": "a"})
+    body = client.get("/bus/messages?channel=c&since_id=does-not-exist").get_json()
+    assert body["cursor_lost"] is True
+    assert [m["message"] for m in body["messages"]] == ["a"]
+
+
+def test_no_cursor_still_returns_latest(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+    for i in range(5):
+        client.post("/bus/messages", json={"channel": "c", "message": f"m{i}"})
+    body = client.get("/bus/messages?channel=c&limit=2").get_json()
+    assert [m["message"] for m in body["messages"]] == ["m3", "m4"]
+    assert "cursor_lost" not in body

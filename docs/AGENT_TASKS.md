@@ -8,7 +8,7 @@ Purpose: single file a new agent reads to continue work safely.
 See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge
 (`iac-bus.knowshowgo.com` → `129.153.192.75:8101`).
 
-> **Parked 2026-09-20.** Blockers and tasks below are frozen. See `docs/PARKED.md`.
+> **2026-09-23:** tasks below are historical. Current direction: `docs/ROLE.md`.
 
 ## Current Blockers
 

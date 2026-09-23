@@ -428,21 +428,41 @@ def bus_get_messages():
         msgs = [m for m in msgs if m["channel"] == channel]
     if not include_queue:
         msgs = [m for m in msgs if not m.get("queue")]
+    # With a cursor, page FORWARD from it: the oldest `limit` messages after
+    # since_id, plus has_more so the caller keeps paging. Taking the newest
+    # `limit` instead (the old behaviour) silently dropped everything between
+    # the cursor and the tail whenever more than `limit` messages arrived.
+    # A cursor that was pruned (retention / max-messages) is reported as
+    # cursor_lost rather than silently replaying the whole channel.
+    cursor_lost = False
+    has_more = False
     if since_id:
-        try:
-            idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
-            msgs = msgs[idx + 1:]
-        except StopIteration:
-            pass
+        idx = next((i for i, m in enumerate(msgs) if m["id"] == since_id), None)
+        if idx is None:
+            cursor_lost = True
+            page = msgs[:limit]
+            has_more = len(msgs) > limit
+        else:
+            after = msgs[idx + 1:]
+            page = after[:limit]
+            has_more = len(after) > limit
+    else:
+        # No cursor: the latest `limit` messages (unchanged).
+        page = msgs[-limit:]
     logger.debug(
-        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s returned=%s",
+        "bus_get_messages channel=%s since_id=%s limit=%s include_queue=%s returned=%s cursor_lost=%s has_more=%s",
         channel or "*",
         since_id or "",
         limit,
         include_queue,
-        len(msgs[-limit:]),
+        len(page),
+        cursor_lost,
+        has_more,
     )
-    return jsonify({"messages": msgs[-limit:]})
+    body = {"messages": page, "has_more": has_more}
+    if since_id:
+        body["cursor_lost"] = cursor_lost
+    return jsonify(body)
 
 
 @app.route("/bus/queues/claim", methods=["POST"])

@@ -1,10 +1,10 @@
 # Agent instructions (iac-bus)
 
-> **PARKED (2026-09-20).** Read `docs/PARKED.md` first. The ladder (L1–L5),
-> OCI provisioning, DNS, and deploy-secret blockers are **not active work**.
-> Only maintenance is in scope: keep `pytest -q` and `scripts/bus_smoke.sh`
-> green. Do not open new feature branches against this repo without the
-> owner explicitly un-parking it.
+> **Read `docs/ROLE.md` first (2026-09-23).** This bus is the cross-host
+> ICBus transport for OSLO agent swarms (track B, OSLO `docs/SWARM-LADDER.md`).
+> Work here is driven by that ladder's rungs, not by the old L1–L5 ladder or
+> the OCI/DNS blockers below. Keep `pytest -q` and `scripts/bus_smoke.sh` green,
+> and keep `GET /bus/messages?since_id=` forward-paging (OSLO depends on it).
 
 Tip branch: `master` (release). Integration tip: `dev` (hot-reload).  
 Public edge (intended): **`https://iac-bus.knowshowgo.com`** → OCI VM `iac-bus-6c58`

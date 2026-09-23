@@ -2,8 +2,8 @@
 
 _Last updated: 2026-09-20. Dated facts are readings, not standing promises._
 
-> **Repo parked at L0 on 2026-09-20.** See `docs/PARKED.md`. Rows below are
-> historical; L1–L5 are frozen, not "not started".
+> **2026-09-23:** see `docs/ROLE.md`. Rows below are historical; the swarm
+> ladder in OSLO decides which of L1–L5 come back.
 
 ## Ladder status
 

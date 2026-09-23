@@ -1,12 +1,12 @@
 # Inter-Agent Communication Bus (IAC Bus)
 
-> **Status (2026-09-20): parked at M0.** The bus is complete and tested as a
-> lightweight HTTP pub/sub + work-leasing service. No sibling repo
-> (knowshowgo-client, truth-app, yolo-online-learner) consumes it, and the
-> M1–M5 ladder would re-implement what Redis Streams / NATS / Temporal and
-> GitHub PR workflows already provide. Do not resume the OCI/DNS/secrets
-> blockers or the ladder unless the trigger in
-> [docs/PARKED.md](docs/PARKED.md) is met. Keep `pytest -q` green; nothing else.
+> **Status (2026-09-23): M0, with one live consumer.** OSLO (`osl-oc-agent`)
+> uses this bus as an ICBus transport for agent swarms (`OSLO_BUS_KIND=iac-bus`):
+> subagents and their parent meet on one channel. Direction and the rungs that
+> matter now are in [docs/ROLE.md](docs/ROLE.md) and OSLO's
+> `docs/SWARM-LADDER.md`. The old L1–L5 ladder is not the plan; only the pieces
+> the swarm ladder names (TLS, presence, a durable ledger) come back, and only
+> when a swarm rung needs them.
 
 Lightweight message bus for coordinating multiple agents over HTTP.
 
