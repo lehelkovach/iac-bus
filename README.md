@@ -2,6 +2,18 @@
 
 Lightweight message bus for coordinating multiple agents over HTTP.
 
+> **Ports differ between this README and the live box.** `BUS_PORT` defaults to
+> **8091**, which is what the examples below and the dev deploy use. The running
+> production VM listens on **8101** (`.github/workflows/prod-deploy.yml` sets
+> `PROD_BUS_PORT: "8101"`; see also `AGENTS.md` and `docs/OCI-LIVE.md`). Against
+> the live host, substitute 8101 — e.g. `http://129.153.192.75:8101/health`.
+>
+> **The public hostname does not resolve yet.** `iac-bus.knowshowgo.com` is
+> NXDOMAIN, re-checked 2026-09-23; the A record to `129.153.192.75` has never
+> been created (tracked as blocker B-002 in `docs/AGENT_TASKS.md`). Until it
+> exists, use the IP and port directly, and treat any doc that prints the
+> hostname as aspirational.
+
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
