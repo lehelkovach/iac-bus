@@ -79,3 +79,10 @@ Do **not** block the human on long dogfood loops; background them and report evi
 - Prove changes with local smoke + pytest before claiming done.
 - Update `docs/PROGRESS.md` when a ladder rung or deploy fact changes.
 - If blocked on missing secrets/DNS/SSH, report the blocker; do not fake progress.
+
+## Continuity
+
+- Stable startup and verification steps live in `.AGENT/RUNBOOK.md`.
+- If work must cross sessions before a PR exists, copy
+  `.AGENT/handoffs/HANDOFF-TEMPLATE.md` to `.AGENT/handoffs/<issue>-<task>.md` on the task
+  branch, and delete it once the issue or PR carries the state.
