@@ -38,11 +38,13 @@ So the first priority is making those primitives correct: exactly one holder
 of a lock, stale holders fenced out, and every message and lock attributable
 to a real run. Identity is needed only as far as that requires.
 
-The extranet protocol's authority layer covers grants, human approvals of
-exact actions, signed receipts and federation. It matters once the bus
-coordinates agents across **trust boundaries**: outside users, other
-organisations, or real side effects like payments and merges. Here it is a
-separate, later track (Track B).
+The protocol was then extended for **multi-agent communication on the
+internet**. That extension is the agent extranet: dispatching, authentication,
+delegated authority, human approval of exact actions, and verifiable
+provenance. It matters once the bus coordinates agents across **trust
+boundaries**: outside users, other organisations, or real side effects like
+payments and merges. Here it is a separate, later track (Track B) that builds
+on Track A's records.
 
 The goal is one record set that serves both tracks. Every message, lock and
 claim on the bus must answer **which run did it and which agent that is**.
@@ -178,11 +180,24 @@ repository, each with a real identity, that cannot take the same task, cannot
 edit the same paths at once, and can wait on each other. It needs no
 cryptography.
 
-### Track B: authority across trust boundaries (later, only when needed)
+### Track B: multi-agent communication on the internet (later, only when needed)
 
-This track is the extranet protocol and kickstart WP3, WP5, WP7 and WP8. Start
-it when the bus coordinates agents that are not all yours, or approves real
-side effects.
+The extranet protocol extends the same bus from one project to agents that
+meet across the internet. It covers:
+- dispatching work between agents that do not share an operator;
+- authenticating who each agent and principal is;
+- delegating bounded authority;
+- human approval of exact actions;
+- provenance a third party can verify.
+
+That is the accountable-agents story AI-safety buyers care about: every
+action traces to a human mandate and carries a receipt. This track is the
+extranet protocol plus kickstart WP3, WP5, WP7 and WP8. It reuses Track A's
+records unchanged (runs stay the actor, and the lineage is the root of every
+receipt), so none of Track A is thrown away.
+
+Start it when the bus coordinates agents that are not all yours, or approves
+real side effects.
 
 | Rung | Build | Gate |
 |---|---|---|
