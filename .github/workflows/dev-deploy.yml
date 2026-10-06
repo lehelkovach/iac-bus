@@ -31,7 +31,10 @@ jobs:
   deploy-dev-vm:
     runs-on: ubuntu-latest
     needs: test
-    if: ${{ secrets.KSG_DEV_VM_HOST != '' && secrets.KSG_DEV_VM_USER != '' && secrets.KSG_DEV_VM_KEY != '' }}
+    # NOTE: `secrets` is NOT available in a job-level `if:` (only github/needs/
+    # vars/inputs are), so gating the job on `secrets.* != ''` made GitHub
+    # reject the whole file (0-job 'workflow file issue' runs). Gate inside the
+    # step instead, where the `secrets` context IS available.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,5 +50,10 @@ jobs:
           DEV_BUS_PORT: 8091
           DEV_BUS_LOG_LEVEL: DEBUG
         run: |
+          set -euo pipefail
+          if [ -z "${KSG_DEV_VM_HOST}" ] || [ -z "${KSG_DEV_VM_USER}" ] || [ -z "${KSG_DEV_VM_KEY}" ]; then
+            echo "Dev VM deploy secrets not set (KSG_DEV_VM_HOST/USER/KEY); skipping deploy."
+            exit 0
+          fi
           chmod +x scripts/deploy-dev-vm.sh
           ./scripts/deploy-dev-vm.sh
