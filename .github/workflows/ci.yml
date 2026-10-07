@@ -1,0 +1,33 @@
+name: ci
+
+# Runs the test suite on every pull request and on pushes to feature
+# branches, so a PR is red before it reaches dev. Pushes to `dev` and
+# `master` are covered by dev-deploy.yml / prod-deploy.yml.
+on:
+  pull_request:
+  push:
+    branches:
+      - "claude/**"
+      - "cursor/**"
+      - "feat/**"
+      - "fix/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
