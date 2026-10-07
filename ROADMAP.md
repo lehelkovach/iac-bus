@@ -22,7 +22,10 @@ low-latency delivery over polling now and push transport later.
 - [ ] Conversation threads and correlation IDs.
 
 ### M2 - Reliability and storage
-- [ ] Durable storage (SQLite/Redis/Postgres).
+- [x] Durable storage: opt-in SQLite store landed (`IAC_BUS_STORE=sqlite`,
+      `IAC_BUS_DB=<path>`); default stays in-memory. Messages, queue leases
+      and agent registrations persist; orchestration jobs do not yet.
+      Redis/Postgres not started.
 - [ ] Dead-letter queues + retry/backoff policies.
 - [ ] Priority scheduling and ordering controls.
 

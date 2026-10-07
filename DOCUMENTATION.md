@@ -162,6 +162,8 @@ Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 | `BUS_VERSION` | `0.1.0` | Version string in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |
+| `IAC_BUS_STORE` | `memory` | Storage backend: `memory` or `sqlite` |
+| `IAC_BUS_DB` | `iac-bus.db` | SQLite file path when `IAC_BUS_STORE=sqlite` |
 
 ## Runtime Behavior
 - Messages are pruned on insert and on read.
@@ -353,10 +355,15 @@ python3 -m venv venv
 - Empty message list: verify the `channel`, `since_id`, and retention settings.
 
 ## Limitations
-- Messages are stored only in memory; restarts clear all data.
-- If you run multiple processes (for example, gunicorn with multiple workers),
-  each process maintains its own message list.
-- There is no built-in persistence or fine-grained access control.
+- By default messages are stored only in memory; restarts clear all data.
+  Set `IAC_BUS_STORE=sqlite` (and `IAC_BUS_DB`) to persist messages, queue
+  leases and agent registrations across restarts. Orchestration job state
+  is in-memory in both modes.
+- If you run multiple processes (for example, gunicorn with multiple workers)
+  with the default memory store, each process maintains its own message
+  list. With the SQLite store, workers share the database file, but the
+  long-poll wake-up is per process (a waiting poll re-checks every 250 ms).
+- There is no fine-grained access control.
 
 ## Roadmap
 All items below are **Planned** unless explicitly marked otherwise.

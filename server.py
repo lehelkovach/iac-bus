@@ -24,6 +24,14 @@ from orchestration import (
     mark_step_skipped,
     validate_job_spec,
 )
+from store import (
+    BACKENDS,
+    DEFAULT_DB_PATH,
+    STATUS_LEASED,
+    STATUS_PENDING,
+    STATUS_PUBLISHED,
+    create_store,
+)
 
 app = Flask(__name__)
 
@@ -43,24 +51,24 @@ BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
 BUS_WAIT_SECONDS_MAX = int(os.environ.get("BUS_WAIT_SECONDS_MAX", "30"))
 BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0")
 BUS_GIT_SHA = os.environ.get("BUS_GIT_SHA", os.environ.get("GITHUB_SHA", ""))
+# Storage backend: "memory" (default, state lost on restart) or "sqlite"
+# (durable; file named by IAC_BUS_DB). See store.py.
+IAC_BUS_STORE = os.environ.get("IAC_BUS_STORE", "memory").strip().lower()
+IAC_BUS_DB = os.environ.get("IAC_BUS_DB", DEFAULT_DB_PATH)
+if IAC_BUS_STORE not in BACKENDS:
+    raise ValueError(f"IAC_BUS_STORE must be one of {BACKENDS}, got {IAC_BUS_STORE!r}")
 
-STATUS_PUBLISHED = "published"
-STATUS_PENDING = "pending"
-STATUS_LEASED = "leased"
-
-# In-memory state
+# Message + agent state. With the default memory backend the store operates
+# directly on these two containers, so they remain the live state; with the
+# sqlite backend they stay empty and the database holds the records.
 _bus_messages = []
-_bus_lock = threading.Lock()
+_agents = {}
+_store = create_store(IAC_BUS_STORE, IAC_BUS_DB, messages=_bus_messages, agents=_agents)
 _bus_new_message = threading.Event()
 
-# Orchestration state
+# Orchestration state (in-memory in both backends)
 _jobs = {}
 _jobs_lock = threading.Lock()
-
-# Ephemeral agent registry stub (ACP Stage 3 hook — not durable yet)
-# TODO(ACP Stage 2–3): replace with durable agent identity registry (SQLite/Postgres).
-_agents = {}
-_agents_lock = threading.Lock()
 
 _STARTED_AT = time.time()
 
@@ -158,23 +166,6 @@ def _process_rss_bytes():
         return None
 
 
-def _queue_counts_locked(now=None):
-    now = now or time.time()
-    pending = 0
-    leased = 0
-    for message in _bus_messages:
-        if not message.get("queue"):
-            continue
-        status = message.get("status")
-        if status == STATUS_LEASED and message.get("lease_until", 0) > now:
-            leased += 1
-        elif status == STATUS_PENDING or (
-            status == STATUS_LEASED and message.get("lease_until", 0) <= now
-        ):
-            pending += 1
-    return pending, leased
-
-
 def _normalize_message_payload(data):
     errors = []
     protocol = data.get("protocol")
@@ -246,21 +237,6 @@ def _normalize_message_payload(data):
         "ttl_seconds": ttl_seconds,
     }
     return payload, errors
-
-
-def _message_is_expired(message, now):
-    ttl_seconds = message.get("ttl_seconds")
-    if ttl_seconds is not None:
-        if now - message["ts"] > ttl_seconds:
-            return True
-    return now - message["ts"] > BUS_RETENTION_SECONDS
-
-
-def _release_message(message):
-    message["status"] = STATUS_PENDING
-    message["leased_by"] = ""
-    message["lease_until"] = 0
-    message["lease_id"] = ""
 
 
 def _build_assignment_payload(job, step):
@@ -361,13 +337,7 @@ def _prepare_orchestration_action(payload):
 
 def _bus_prune(now=None):
     now = now or time.time()
-    with _bus_lock:
-        for message in _bus_messages:
-            if message.get("status") == STATUS_LEASED and message.get("lease_until", 0) <= now:
-                _release_message(message)
-        _bus_messages[:] = [m for m in _bus_messages if not _message_is_expired(m, now)]
-        if len(_bus_messages) > BUS_MAX_MESSAGES:
-            _bus_messages[:] = _bus_messages[-BUS_MAX_MESSAGES:]
+    _store.prune(now, BUS_RETENTION_SECONDS, BUS_MAX_MESSAGES)
 
 
 def _bus_add_message(payload):
@@ -391,8 +361,7 @@ def _bus_add_message(payload):
     for key in ("conversation_id", "reply_to", "recipient", "group", "headers", "ttl_seconds"):
         if payload.get(key) is not None:
             msg[key] = payload[key]
-    with _bus_lock:
-        _bus_messages.append(msg)
+    _store.add_message(msg)
     _bus_new_message.set()
     logger.debug(
         "bus_message_added id=%s channel=%s type=%s queue=%s status=%s sender=%s",
@@ -409,19 +378,7 @@ def _bus_add_message(payload):
 
 def _filter_messages(channel, since_id, limit, include_queue):
     _bus_prune()
-    with _bus_lock:
-        msgs = list(_bus_messages)
-    if channel:
-        msgs = [m for m in msgs if m["channel"] == channel]
-    if not include_queue:
-        msgs = [m for m in msgs if not m.get("queue")]
-    if since_id:
-        try:
-            idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
-            msgs = msgs[idx + 1:]
-        except StopIteration:
-            pass
-    return msgs[-limit:]
+    return _store.list_messages(channel, since_id, include_queue, limit)
 
 
 def _claim_queue_message(queue, worker, lease_seconds):
@@ -429,66 +386,32 @@ def _claim_queue_message(queue, worker, lease_seconds):
     _bus_prune(now)
     if lease_seconds is None:
         lease_seconds = BUS_QUEUE_LEASE_SECONDS
-    with _bus_lock:
-        for message in _bus_messages:
-            if message.get("queue") != queue:
-                continue
-            if message.get("status") == STATUS_LEASED:
-                if message.get("lease_until", 0) > now:
-                    continue
-                _release_message(message)
-            if message.get("status") != STATUS_PENDING:
-                continue
-            message["status"] = STATUS_LEASED
-            message["leased_by"] = worker
-            message["lease_until"] = now + lease_seconds
-            message["lease_id"] = uuid.uuid4().hex
-            logger.debug(
-                "queue_message_claimed queue=%s message_id=%s worker=%s lease_seconds=%s lease_id=%s",
-                queue,
-                message["id"],
-                worker,
-                lease_seconds,
-                message["lease_id"],
-            )
-            return message
-    return None
+    message = _store.claim_queue(queue, worker, lease_seconds, now)
+    if message is not None:
+        logger.debug(
+            "queue_message_claimed queue=%s message_id=%s worker=%s lease_seconds=%s lease_id=%s",
+            queue,
+            message["id"],
+            worker,
+            lease_seconds,
+            message["lease_id"],
+        )
+    return message
 
 
 def _ack_queue_message(queue, message_id, worker, lease_id, requeue):
     _bus_prune()
-    with _bus_lock:
-        for idx, message in enumerate(_bus_messages):
-            if message.get("id") != message_id:
-                continue
-            if message.get("queue") != queue:
-                continue
-            if message.get("status") != STATUS_LEASED:
-                return None, "message not leased"
-            if message.get("leased_by") != worker:
-                return None, "lease owner mismatch"
-            if message.get("lease_id") != lease_id:
-                return None, "lease id mismatch"
-            if requeue:
-                _release_message(message)
-                logger.debug(
-                    "queue_message_nacked queue=%s message_id=%s worker=%s lease_id=%s",
-                    queue,
-                    message_id,
-                    worker,
-                    lease_id,
-                )
-                return message, None
-            _bus_messages.pop(idx)
-            logger.debug(
-                "queue_message_acked queue=%s message_id=%s worker=%s lease_id=%s",
-                queue,
-                message_id,
-                worker,
-                lease_id,
-            )
-            return message, None
-    return None, "not found"
+    message, error = _store.ack_queue(queue, message_id, worker, lease_id, requeue)
+    if error is None:
+        logger.debug(
+            "queue_message_%s queue=%s message_id=%s worker=%s lease_id=%s",
+            "nacked" if requeue else "acked",
+            queue,
+            message_id,
+            worker,
+            lease_id,
+        )
+    return message, error
 
 
 @app.route("/bus/messages", methods=["POST"])
@@ -698,10 +621,12 @@ def bus_get_orchestration_ready(job_id):
 @app.route("/agents/register", methods=["POST"])
 def agents_register():
     """
-    Ephemeral agent registration stub (ACP Stage 3 hook).
+    Agent registration (ACP Stage 3 hook).
 
-    TODO(ACP Stage 2–3): persist agent_uuid/handle in SQLite/Postgres registry,
-    support heartbeat, parent/root relationships, and durable identity.
+    Records go through the configured store: in-memory by default, or SQLite
+    when IAC_BUS_STORE=sqlite (then `ephemeral` is false and the record
+    survives a restart). Heartbeat, parent/root relationships and durable
+    identity (M1) are still TODO.
     """
     data = request.get_json() or {}
     handle = data.get("handle") or data.get("agent_handle") or "agent"
@@ -724,10 +649,9 @@ def agents_register():
         "status": "active",
         "registered_at": now,
         "last_seen_at": now,
-        "ephemeral": True,
+        "ephemeral": not _store.durable,
     }
-    with _agents_lock:
-        _agents[agent_uuid] = record
+    _store.put_agent(record)
     logger.debug(
         "agent_registered uuid=%s handle=%s role=%s",
         agent_uuid,
@@ -740,9 +664,8 @@ def agents_register():
 @app.route("/health", methods=["GET"])
 def health():
     now = time.time()
-    with _bus_lock:
-        messages_retained = len(_bus_messages)
-        pending, leased = _queue_counts_locked(now)
+    messages_retained = _store.message_count()
+    pending, leased = _store.queue_counts(now)
     with _jobs_lock:
         jobs_active = len(_jobs)
     rss = _process_rss_bytes()
@@ -764,9 +687,8 @@ def health():
 @app.route("/metrics", methods=["GET"])
 def metrics():
     now = time.time()
-    with _bus_lock:
-        messages_in_memory = len(_bus_messages)
-        _pending, leased = _queue_counts_locked(now)
+    messages_in_memory = _store.message_count()
+    _pending, leased = _store.queue_counts(now)
     with _jobs_lock:
         jobs_in_memory = len(_jobs)
     with _metrics_lock:
@@ -801,5 +723,13 @@ def metrics():
 if __name__ == "__main__":
     host = os.environ.get("BUS_HOST", "0.0.0.0")
     port = int(os.environ.get("BUS_PORT", "8091"))
-    logger.info("Starting IAC Bus on %s:%s version=%s git_sha=%s", host, port, BUS_VERSION, BUS_GIT_SHA or "unknown")
+    logger.info(
+        "Starting IAC Bus on %s:%s version=%s git_sha=%s store=%s db=%s",
+        host,
+        port,
+        BUS_VERSION,
+        BUS_GIT_SHA or "unknown",
+        _store.backend,
+        IAC_BUS_DB if _store.durable else "-",
+    )
     app.run(host=host, port=port, threaded=True)

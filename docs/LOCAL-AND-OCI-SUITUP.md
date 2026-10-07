@@ -68,7 +68,12 @@ Smoke covers: `/health`, unauthenticated `401`, post, channel poll, `since_id`, 
 | `BUS_API_TOKEN` | `devtoken` | Bearer token; empty disables auth |
 | `BUS_LOG_LEVEL` | `INFO` | Use `DEBUG` for verbose local debug |
 
-## OCI / Cloud (only when asked)
+## Public edge
+
+Intended hostname: **`iac-bus.knowshowgo.com`** (A → OCI `iac-bus-6c58` public IP).
+See `docs/OCI-LIVE.md`. Prefer local loop until DNS/TLS are verified.
+
+## OCI / Cloud (when Captain asks — approved for edge work)
 
 Do **not** provision or deploy unless the human explicitly requests it.
 
