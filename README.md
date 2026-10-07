@@ -99,7 +99,7 @@ Counters (`messages_posted`, `messages_polled`, `queue_claims`/`acks`/`nacks`,
 (`post_latency_ms_avg`, `poll_latency_ms_avg`, `claim_latency_ms_avg`).
 `/health` and `/metrics` do not require auth.
 
-### Register agent (ephemeral stub)
+### Register agent (registry stub)
 ```bash
 curl -X POST http://<BUS_IP>:8091/agents/register \
   -H "Authorization: Bearer $BUS_API_TOKEN" \
@@ -107,7 +107,9 @@ curl -X POST http://<BUS_IP>:8091/agents/register \
   -d '{"handle":"agent:cursor.iac-bus.0@web","role":"worker"}'
 ```
 
-In-memory only — durable ACP registry is a follow-up (Stage 2–3).
+Records go through the configured store: in-memory by default (`ephemeral: true`),
+or SQLite with `IAC_BUS_STORE=sqlite` (`ephemeral: false`, survives restart).
+Heartbeat, parent/root relationships and durable identity (M1) are still a follow-up.
 
 ## Environment
 
@@ -123,6 +125,12 @@ In-memory only — durable ACP registry is a follow-up (Stage 2–3).
 | `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
 | `BUS_VERSION` | `0.1.0` | Reported in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |
+| `IAC_BUS_STORE` | `memory` | Storage backend: `memory` (state lost on restart) or `sqlite` |
+| `IAC_BUS_DB` | `iac-bus.db` | SQLite file path when `IAC_BUS_STORE=sqlite` (parent dir is created) |
+
+With `IAC_BUS_STORE=sqlite`, messages, queue leases and agent registrations
+survive a restart; orchestration job state and `/metrics` counters stay
+in-process. The HTTP API is identical in both modes.
 
 ## Local Run
 ```bash
