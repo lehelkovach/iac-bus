@@ -23,6 +23,8 @@ import anyio
 from mcp import Client, StdioServerParameters
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from mcp_server import passthrough_env  # noqa: E402
 PATH = "src/app.py"
 
 
@@ -54,6 +56,7 @@ def server_params(agent: str, repo: str) -> StdioServerParameters:
         "BUS_REPO": repo,
         "BUS_REPO_ROOT": str(ROOT),
     }
+    env.update(passthrough_env())
     return StdioServerParameters(command=sys.executable, args=[str(ROOT / "mcp_server.py")], cwd=str(ROOT), env=env)
 
 

@@ -46,6 +46,8 @@ from typing import Any, Dict, List, Optional
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from mcp_server import passthrough_env  # noqa: E402
 ALLOWED_TOOLS = [
     "mcp__iac-bus",
     "Read", "Edit", "Write", "Glob", "Grep",
@@ -127,7 +129,7 @@ class AgentRun:
             "command": sys.executable,
             "args": [str(ROOT / "mcp_server.py")],
             "env": {"BUS_URL": bus_url, "BUS_API_TOKEN": token, "BUS_AGENT_ID": f"claude.trial.{name}",
-                    "BUS_REPO": repo_scope, "BUS_REPO_ROOT": str(workdir)},
+                    "BUS_REPO": repo_scope, "BUS_REPO_ROOT": str(workdir), **passthrough_env()},
         }}}))
         os.chmod(self.mcp_config, 0o600)
         self.tool_calls: List[Dict[str, Any]] = []

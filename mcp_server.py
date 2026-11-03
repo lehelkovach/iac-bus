@@ -307,6 +307,20 @@ class BusClient:
 # ---------------------------------------------------------------------------
 
 
+# Network settings a spawned adapter needs to reach a remote bus from behind a
+# proxy. MCP clients often start stdio servers with a minimal environment.
+PASSTHROUGH_ENV = (
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+    "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+)
+
+
+def passthrough_env(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """Proxy and CA settings from ``env`` to hand to a spawned adapter."""
+    env = os.environ if env is None else env
+    return {key: env[key] for key in PASSTHROUGH_ENV if env.get(key)}
+
+
 def _clamp_wait(wait_seconds: float) -> float:
     return float(max(0, min(wait_seconds or 0, MAX_WAIT_SECONDS)))
 

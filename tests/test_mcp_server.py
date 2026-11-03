@@ -634,3 +634,9 @@ def test_server_instructions_carry_the_policy():
     assert "even when your task" in text
     tools.config.approval_for = ()
     assert "APPROVAL POLICY" not in m.build_server(tools).instructions
+
+
+def test_passthrough_env_keeps_only_proxy_and_ca_settings():
+    env = {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem", "NO_PROXY": "",
+           "BUS_API_TOKEN": "secret", "HOME": "/root"}
+    assert m.passthrough_env(env) == {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem"}
