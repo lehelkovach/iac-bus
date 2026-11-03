@@ -273,6 +273,33 @@ else
   bad "run end (code=$(lock_code "${res_end}") released=${ended_locks} after=${after_code})"
 fi
 
+# 11) A2A: public Agent Card, then a task through SendMessage -> worker ack -> GetTask
+card_name="$(curl -fsS "${BUS_URL}/.well-known/agent-card.json" | json_get 'd.get("supportedInterfaces",[{}])[0].get("protocolBinding","")')"
+if [[ "${card_name}" == "JSONRPC" ]]; then
+  ok "GET /.well-known/agent-card.json (public, JSONRPC 1.0)"
+else
+  bad "agent card expected JSONRPC interface got '${card_name}'"
+fi
+A2A_QUEUE="smoke-a2a-$$"
+a2a_token="$(lock_body "$(lock_post /agents/register '{"handle":"smoke-a2a-client","medium":"api"}')" | json_get 'd.get("run_token","")')"
+a2a_call() {
+  curl -sS -X POST "${BUS_URL}/a2a" -H "Authorization: Bearer ${a2a_token}" -H 'A2A-Version: 1.0' \
+    -H 'Content-Type: application/json' -d "$1"
+}
+task_id="$(a2a_call "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"SendMessage\",\"params\":{\"message\":{\"messageId\":\"smoke-$$\",\"role\":\"ROLE_USER\",\"parts\":[{\"text\":\"smoke task\"}]},\"configuration\":{\"returnImmediately\":true},\"metadata\":{\"queue\":\"${A2A_QUEUE}\"}}}" \
+  | json_get 'd.get("result",{}).get("task",{}).get("id","")')"
+a2a_item="$(lock_body "$(lock_post /bus/queues/claim "{\"queue\":\"${A2A_QUEUE}\",\"worker\":\"smoke-worker\",\"lease_seconds\":30}")")"
+a2a_msg_id="$(printf '%s' "${a2a_item}" | json_get 'd.get("message",{}).get("id","")')"
+a2a_lease="$(printf '%s' "${a2a_item}" | json_get 'd.get("message",{}).get("lease_id","")')"
+lock_post /bus/queues/ack "{\"queue\":\"${A2A_QUEUE}\",\"message_id\":\"${a2a_msg_id}\",\"worker\":\"smoke-worker\",\"lease_id\":\"${a2a_lease}\",\"result\":\"smoke done\"}" >/dev/null
+a2a_state="$(a2a_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"GetTask\",\"params\":{\"id\":\"${task_id}\"}}" \
+  | json_get 'd.get("result",{}).get("status",{}).get("state","")')"
+if [[ -n "${task_id}" && "${a2a_state}" == "TASK_STATE_COMPLETED" ]]; then
+  ok "A2A SendMessage -> worker ack -> GetTask COMPLETED"
+else
+  bad "A2A round trip (task=${task_id:-none} state=${a2a_state:-none})"
+fi
+
 echo
 echo "Smoke summary: ${pass} passed, ${fail} failed"
 if [[ "${fail}" -ne 0 ]]; then

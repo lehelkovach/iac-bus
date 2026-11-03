@@ -77,8 +77,15 @@ class MemoryRunTable:
         role: str = "worker",
         medium: str = "",
         session_id: str = "",
+        grants: Optional[Dict[str, List[str]]] = None,
     ) -> tuple[Dict[str, Any], str]:
-        """Create a run. Returns ``(public record, run_token)``; the token is shown once."""
+        """Create a run. Returns ``(public record, run_token)``; the token is shown once.
+
+        ``grants`` restricts the run (deny by default): lists of fnmatch
+        patterns under ``skills``, ``queues``, ``channels`` and repo-relative
+        ``lock_paths``. ``None`` means an unrestricted run, as before grants
+        existed. Registered A2A agents always get grants.
+        """
         now = self._clock()
         run_id = uuid.uuid4().hex
         token = TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -96,6 +103,7 @@ class MemoryRunTable:
             "expires_at": now + ttl_seconds,
             "ttl_seconds": ttl_seconds,
             "ended_at": None,
+            "grants": grants,
             "token_hash": hash_token(token),
         }
         with self._mutex:

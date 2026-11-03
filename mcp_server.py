@@ -706,11 +706,16 @@ class BusTools:
             return {"ok": False, "message_id": message_id, "error": "message not found (lease expired and it was re-claimed or acked)"}
         return {"ok": False, "message_id": message_id, "error": (data or {}).get("error", f"status {status}")}
 
-    def ack_work(self, message_id: str, lease_id: str = "", queue: str = "") -> Dict[str, Any]:
-        return self._finish_work("/bus/queues/ack", message_id, lease_id, queue, {})
+    def ack_work(self, message_id: str, result: str = "", lease_id: str = "", queue: str = "") -> Dict[str, Any]:
+        extra: Dict[str, Any] = {"result": result} if result else {}
+        return self._finish_work("/bus/queues/ack", message_id, lease_id, queue, extra)
 
-    def nack_work(self, message_id: str, requeue: bool = True, lease_id: str = "", queue: str = "") -> Dict[str, Any]:
-        return self._finish_work("/bus/queues/nack", message_id, lease_id, queue, {"requeue": requeue})
+    def nack_work(self, message_id: str, requeue: bool = True, reason: str = "", lease_id: str = "",
+                  queue: str = "") -> Dict[str, Any]:
+        extra: Dict[str, Any] = {"requeue": requeue}
+        if reason:
+            extra["reason"] = reason
+        return self._finish_work("/bus/queues/nack", message_id, lease_id, queue, extra)
 
     # ---------------------------------------------------------- messages
 
@@ -769,14 +774,24 @@ class BusTools:
         recipient: str = "",
         channel: str = DECISION_CHANNEL,
         wait_seconds: int = 0,
+        work_message_id: str = "",
     ) -> Dict[str, Any]:
         conversation_id = uuid.uuid4().hex
         choices = [ChoiceOption(option_id=_slug(label, i), label=label) for i, label in enumerate(options or [])]
+        if not work_message_id:
+            # One claimed work item: the question is about it. The bus uses this
+            # to show the question to an A2A requester as TASK_STATE_INPUT_REQUIRED.
+            with self._mutex:
+                claims = list(self._claims)
+            work_message_id = claims[0] if len(claims) == 1 else ""
+        metadata: Dict[str, Any] = {"repo": self.repo}
+        if work_message_id:
+            metadata["work_message_id"] = work_message_id
         request = DecisionRequest(
             prompt=question,
             choices=choices,
             context={"text": context} if context else None,
-            metadata={"repo": self.repo},
+            metadata=metadata,
         )
         envelope = request_decision_message(
             source=self.agent_id,
@@ -793,6 +808,7 @@ class BusTools:
             "message": envelope,
             "recipient": recipient,
             "conversation_id": conversation_id,
+            "headers": {"work_message_id": work_message_id} if work_message_id else None,
         })
         result = {
             "conversation_id": conversation_id,
@@ -934,10 +950,15 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
         "Take the next work item from a bus queue under a lease. Call ack_work when it is done or "
         "nack_work to hand it back. Acquire locks on the files the work touches before editing them."
     ),
-    "ack_work": "Mark a claimed work item as done. Release the locks you took for it as well.",
+    "ack_work": (
+        "Mark a claimed work item as done. Pass result: a short summary of what you did (files changed, "
+        "outcome); when the work came from an A2A task it is returned to the requester as the task's "
+        "artifact. Release the locks you took for it as well."
+    ),
     "nack_work": (
         "Hand a claimed work item back to the queue (requeue=true, the default) or drop it "
-        "(requeue=false), for example when you are blocked or it is not yours to do."
+        "(requeue=false), for example when you are blocked or it is not yours to do. Give a reason; when "
+        "you drop an A2A task it is returned to the requester."
     ),
     "post_message": (
         "Post a message to a bus channel for other agents or humans: progress, a blocker, a handoff, or "

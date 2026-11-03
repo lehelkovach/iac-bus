@@ -368,6 +368,9 @@
         },
         "lease_id": {
           "type": "string"
+        },
+        "result": {
+          "description": "Optional outcome of the work (string or JSON). For A2A tasks it becomes the task's artifact."
         }
       },
       "additionalProperties": false
@@ -396,6 +399,10 @@
         },
         "requeue": {
           "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the work was handed back; for A2A tasks dropped with requeue=false it becomes the failure message."
         }
       },
       "additionalProperties": false
@@ -834,6 +841,9 @@
           "exclusiveMinimum": 0,
           "default": 3600,
           "description": "Sliding expiry; capped at BUS_RUN_TTL_MAX_SECONDS (default 86400)."
+        },
+        "grants": {
+          "$ref": "#/$defs/Grants"
         }
       }
     },
@@ -896,6 +906,16 @@
           "type": [
             "number",
             "null"
+          ]
+        },
+        "grants": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Grants"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -997,6 +1017,128 @@
         },
         "count": {
           "type": "integer"
+        }
+      }
+    },
+    "Grants": {
+      "type": "object",
+      "description": "Deny-by-default allowlists for a restricted run (fnmatch patterns; lock_paths are repo-relative paths that cover everything below them).",
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "queues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "lock_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "A2ARegisterRequest": {
+      "type": "object",
+      "description": "POST /agents/a2a/register (shared token). Exactly one of card_url (fetched: https, public addresses unless in BUS_A2A_ALLOW_HOSTS) or card.",
+      "properties": {
+        "card_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "card": {
+          "type": "object",
+          "description": "An A2A 1.0 AgentCard (camelCase JSON)."
+        },
+        "handle": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:@/+-]{1,128}$",
+          "description": "Default: a2a.<card name slug>."
+        },
+        "grants": {
+          "$ref": "#/$defs/Grants"
+        },
+        "credential_env": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "description": "NAME of the env var on the bridge host holding the token for calling this agent. Never a value."
+        },
+        "run_ttl_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "card_url"
+          ]
+        },
+        {
+          "required": [
+            "card"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "A2ARegisterResponse": {
+      "type": "object",
+      "required": [
+        "success",
+        "agent",
+        "run",
+        "actor",
+        "run_token",
+        "outbound_queue"
+      ],
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "agent": {
+          "type": "object",
+          "required": [
+            "agent_uuid",
+            "handle",
+            "card",
+            "grants",
+            "outbound_queue"
+          ]
+        },
+        "run": {
+          "$ref": "#/$defs/Run"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "run_token": {
+          "type": "string",
+          "pattern": "^iacrun_"
+        },
+        "outbound_queue": {
+          "type": "string",
+          "description": "Queue the outbound bridge reads for work addressed to this agent."
+        },
+        "updated": {
+          "type": "boolean"
         }
       }
     }
