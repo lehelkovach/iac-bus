@@ -216,6 +216,25 @@ an `exclusive` lock; the response includes the lock's `mode`.
 `resource_prefix` returns every lock overlapping that path, including locks on
 its parent folders.
 
+### MCP adapter (`mcp_server.py`)
+
+A stdio MCP server that wraps the HTTP API for coding agents. Each agent
+session runs its own copy, configured by `BUS_URL`, `BUS_API_TOKEN` and
+`BUS_AGENT_ID`. A random `#<6 hex>` suffix is added to the id per process
+(`BUS_AGENT_SUFFIX=0` disables it) so sessions sharing one config stay
+distinct. The lock scope `BUS_REPO` defaults to the origin remote's repo name.
+
+Tools: `acquire_lock`, `release_lock`, `renew_lock`, `check_lock`,
+`list_locks`, `claim_work`, `ack_work`, `nack_work`, `post_message`,
+`read_messages`, `request_decision`, `check_decision`, `report_status`.
+Decision and status messages use the `agent_contract.py` envelope
+(`request_decision`, `provide_decision`, `report_status`) on channels
+`decisions` and `status`. On exit the adapter releases the locks it holds.
+
+Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
+`bash scripts/demo_two_agents.sh`. Dependencies: `requirements-mcp.txt`
+(Python 3.10+; not needed by the bus server).
+
 ### POST /agents/register
 Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
 `agent_uuid` + `agent_handle`. Not durable across restarts.
