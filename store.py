@@ -14,6 +14,10 @@ Two interchangeable backends sit behind the same small interface:
   what the current HTTP API needs; the lock/endpoint tables from that branch
   were left behind.
 
+Each backend also carries ``locks``, a path-lock table (``locks.py``). It is
+in memory in both backends today, so locks do not survive a restart even with
+SQLite; ``/health`` reports this as ``locks_durable``.
+
 Both backends keep the message dict shape the HTTP API already returns, so
 switching backend never changes a response body. Orchestration job state and
 the metrics counters stay in memory in either mode.
@@ -28,6 +32,8 @@ import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
+
+from locks import MemoryLockTable
 
 STATUS_PUBLISHED = "published"
 STATUS_PENDING = "pending"
@@ -69,6 +75,8 @@ class MemoryStore:
         self.messages: List[Dict[str, Any]] = messages if messages is not None else []
         self.agents: Dict[str, Dict[str, Any]] = agents if agents is not None else {}
         self._lock = threading.RLock()
+        # Path locks (locks.py). In memory in both backends for now.
+        self.locks = MemoryLockTable()
 
     def close(self) -> None:
         return None
@@ -231,6 +239,9 @@ class SqliteStore:
             if parent:
                 os.makedirs(parent, exist_ok=True)
         self._lock = threading.RLock()
+        # Path locks stay in memory even in this backend; a restart drops
+        # them. See the TODO(L5) in locks.py before persisting them.
+        self.locks = MemoryLockTable()
         # check_same_thread=False: Flask serves requests on worker threads;
         # every access is serialised by self._lock.
         self._conn = sqlite3.connect(db_path, check_same_thread=False)

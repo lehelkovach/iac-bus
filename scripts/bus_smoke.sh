@@ -184,6 +184,68 @@ else
   bad "orchestration happy path (orch_ok=${orch_ok} claim=${claim_step} status_ok=${status_ok} next=${next_step})"
 fi
 
+# 9) path locks: conflict, fencing check, release, hand-over
+LOCK_REPO="${CHANNEL}"
+lock_post() {
+  # usage: lock_post <path> <json>; prints "<http_code> <body>"
+  curl -sS -w '\n%{http_code}' -X POST "${BUS_URL}$1" \
+    -H "${AUTH_HEADER}" -H 'Content-Type: application/json' -d "$2"
+}
+lock_code() { printf '%s' "$1" | tail -n1; }
+lock_body() { printf '%s' "$1" | sed '$d'; }
+
+noauth_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BUS_URL}/bus/locks/acquire" \
+  -H 'Content-Type: application/json' -d '{"resource":"src/app.py","agent":"smoke-a"}')"
+if [[ "${noauth_code}" == "401" ]]; then
+  ok "POST /bus/locks/acquire without token -> 401"
+else
+  bad "POST /bus/locks/acquire without token expected 401 got ${noauth_code}"
+fi
+
+res_a="$(lock_post /bus/locks/acquire "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"src/app.py\",\"agent\":\"smoke-a\",\"ttl_seconds\":30,\"reason\":\"smoke\"}")"
+lock_a_id="$(lock_body "${res_a}" | json_get 'd.get("lock_id","")')"
+token_a="$(lock_body "${res_a}" | json_get 'd.get("fencing_token","")')"
+if [[ "$(lock_code "${res_a}")" == "200" && -n "${lock_a_id}" ]]; then
+  ok "POST /bus/locks/acquire -> 200 (fencing_token=${token_a})"
+else
+  bad "POST /bus/locks/acquire expected 200 got $(lock_code "${res_a}")"
+fi
+
+res_b="$(lock_post /bus/locks/acquire "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"src\",\"agent\":\"smoke-b\",\"ttl_seconds\":30}")"
+held_by="$(lock_body "${res_b}" | json_get 'd.get("held_by","")')"
+if [[ "$(lock_code "${res_b}")" == "409" && "${held_by}" == "smoke-a" ]]; then
+  ok "overlapping acquire by another agent -> 409 held_by=smoke-a"
+else
+  bad "overlapping acquire expected 409 held_by=smoke-a got $(lock_code "${res_b}") ${held_by}"
+fi
+
+res_v="$(lock_post /bus/locks/validate "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"src/app.py\",\"fencing_token\":${token_a:-0}}")"
+if [[ "$(lock_code "${res_v}")" == "200" ]]; then
+  ok "POST /bus/locks/validate live token -> 200"
+else
+  bad "POST /bus/locks/validate expected 200 got $(lock_code "${res_v}")"
+fi
+
+res_r="$(lock_post /bus/locks/release "{\"lock_id\":\"${lock_a_id}\",\"agent\":\"smoke-a\"}")"
+res_v2="$(lock_post /bus/locks/validate "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"src/app.py\",\"fencing_token\":${token_a:-0}}")"
+res_b2="$(lock_post /bus/locks/acquire "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"src\",\"agent\":\"smoke-b\",\"ttl_seconds\":30}")"
+lock_b_id="$(lock_body "${res_b2}" | json_get 'd.get("lock_id","")')"
+token_b="$(lock_body "${res_b2}" | json_get 'd.get("fencing_token",0)')"
+if [[ "$(lock_code "${res_r}")" == "200" && "$(lock_code "${res_v2}")" == "409" \
+      && "$(lock_code "${res_b2}")" == "200" && "${token_b}" -gt "${token_a:-0}" ]]; then
+  ok "release -> stale token rejected -> next agent acquires with higher token"
+else
+  bad "lock hand-over (release=$(lock_code "${res_r}") stale=$(lock_code "${res_v2}") b=$(lock_code "${res_b2}") tokens=${token_a}/${token_b})"
+fi
+lock_post /bus/locks/release "{\"lock_id\":\"${lock_b_id}\",\"agent\":\"smoke-b\"}" >/dev/null
+
+remaining="$(curl -fsS "${BUS_URL}/bus/locks?repo=${LOCK_REPO}" -H "${AUTH_HEADER}" | json_get 'd.get("count")')"
+if [[ "${remaining}" == "0" ]]; then
+  ok "GET /bus/locks?repo=... empty after releases"
+else
+  bad "GET /bus/locks?repo=... expected 0 got ${remaining}"
+fi
+
 echo
 echo "Smoke summary: ${pass} passed, ${fail} failed"
 if [[ "${fail}" -ne 0 ]]; then

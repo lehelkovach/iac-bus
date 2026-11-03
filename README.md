@@ -18,6 +18,7 @@ Lightweight message bus for coordinating multiple agents over HTTP.
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
 - Queue-style work leasing (claim/ack/nack)
+- Repo path locks with fencing tokens (acquire/renew/release/validate)
 - Optional bearer-token auth
 - Systemd service deployment
 
@@ -99,6 +100,25 @@ Counters (`messages_posted`, `messages_polled`, `queue_claims`/`acks`/`nacks`,
 (`post_latency_ms_avg`, `poll_latency_ms_avg`, `claim_latency_ms_avg`).
 `/health` and `/metrics` do not require auth.
 
+### Path locks
+Lock a repo path before editing it; release it afterwards. Folder locks cover
+everything below them, overlap is by whole path segment, and every acquire
+gets a rising `fencing_token`. Full rules: `DOCUMENTATION.md` → Path locks.
+```bash
+# acquire (200 with lock_id + fencing_token, or 409 with held_by/mode/reason/expires_at)
+curl -X POST http://<BUS_IP>:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo":"iac-bus","resource":"src/app.py","agent":"agent-a","ttl_seconds":600,"reason":"refactor","wait_seconds":0}'
+# renew / release (holder only)
+curl -X POST http://<BUS_IP>:8091/bus/locks/renew   -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a","ttl_seconds":600}'
+curl -X POST http://<BUS_IP>:8091/bus/locks/release -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a"}'
+# is my fencing token still live for this path? (200 / 409)
+curl -X POST http://<BUS_IP>:8091/bus/locks/validate -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"repo":"iac-bus","resource":"src/app.py","fencing_token":1793669138519}'
+# who holds what under a path
+curl "http://<BUS_IP>:8091/bus/locks?repo=iac-bus&resource_prefix=src/" -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+Lock events are posted to channel `locks` (`lock.acquired`, `lock.released`, `lock.expired`).
+
 ### Register agent (registry stub)
 ```bash
 curl -X POST http://<BUS_IP>:8091/agents/register \
@@ -121,7 +141,9 @@ Heartbeat, parent/root relationships and durable identity (M1) are still a follo
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
-| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll and lock waits |
+| `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
+| `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
 | `BUS_VERSION` | `0.1.0` | Reported in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |
