@@ -20,7 +20,11 @@ Configuration (environment):
                     every clone and worktree of a repo shares one scope; then
                     the main checkout's folder name)
   BUS_REPO_ROOT     repo root used to turn absolute paths into repo-relative
-                    ones (default: git top level of the working directory)
+                    ones (default: git top level of CLAUDE_PROJECT_DIR when
+                    Claude Code sets it, else of the working directory)
+
+An unexpanded ``${VAR}`` placeholder (what Claude Code leaves in a .mcp.json
+``env`` entry when VAR is unset) counts as unset.
   BUS_HTTP_TIMEOUT  seconds per HTTP call, on top of any wait (default 15)
 
 Run ``python mcp_server.py --check`` to print the resolved configuration and
@@ -68,7 +72,7 @@ MAX_WAIT_SECONDS = 30
 DECISION_CHANNEL = "decisions"
 STATUS_CHANNEL = "status"
 
-_FALSEY = {"0", "false", "no", "off", "none", ""}
+_FALSEY = {"0", "false", "no", "off", "none"}
 
 
 class BusError(Exception):
@@ -146,6 +150,19 @@ def session_agent_id(base: str, suffix_mode: str = "auto") -> str:
     return f"{base}#{secrets.token_hex(3)}"
 
 
+_PLACEHOLDER_RE = re.compile(r"^\$\{[^}]*\}$")
+
+
+def _env_value(env: Mapping[str, str], key: str) -> str:
+    """Read ``key``, treating an unexpanded ``${VAR}`` placeholder as unset.
+
+    Claude Code leaves ``${VAR}`` literally in a .mcp.json ``env`` entry when
+    VAR is unset and no default is given.
+    """
+    value = (env.get(key) or "").strip()
+    return "" if _PLACEHOLDER_RE.match(value) else value
+
+
 @dataclass
 class Config:
     bus_url: str
@@ -158,17 +175,20 @@ class Config:
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None, cwd: Optional[Path] = None) -> "Config":
         env = os.environ if env is None else env
+        get = functools.partial(_env_value, env)
         cwd = Path(cwd or os.getcwd()).resolve()
-        top = _git_toplevel(cwd)
-        repo_root = Path(env.get("BUS_REPO_ROOT") or top or cwd).resolve()
-        repo = (env.get("BUS_REPO") or detect_repo_name(repo_root) or repo_root.name or "default").strip()
+        # Claude Code sets CLAUDE_PROJECT_DIR for the servers it spawns; the
+        # working directory it uses is not documented.
+        start = Path(get("CLAUDE_PROJECT_DIR") or cwd).resolve()
+        repo_root = Path(get("BUS_REPO_ROOT") or _git_toplevel(start) or start).resolve()
+        repo = get("BUS_REPO") or detect_repo_name(repo_root) or repo_root.name or "default"
         return cls(
-            bus_url=(env.get("BUS_URL") or DEFAULT_BUS_URL).rstrip("/"),
-            api_token=env.get("BUS_API_TOKEN", ""),
-            agent_id=session_agent_id(env.get("BUS_AGENT_ID", ""), env.get("BUS_AGENT_SUFFIX", "auto")),
+            bus_url=(get("BUS_URL") or DEFAULT_BUS_URL).rstrip("/"),
+            api_token=get("BUS_API_TOKEN"),
+            agent_id=session_agent_id(get("BUS_AGENT_ID"), get("BUS_AGENT_SUFFIX") or "auto"),
             repo=repo,
             repo_root=repo_root,
-            http_timeout=float(env.get("BUS_HTTP_TIMEOUT") or DEFAULT_HTTP_TIMEOUT),
+            http_timeout=float(get("BUS_HTTP_TIMEOUT") or DEFAULT_HTTP_TIMEOUT),
         )
 
 

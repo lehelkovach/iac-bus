@@ -102,6 +102,24 @@ def test_config_from_env(tmp_path):
     assert cfg.repo_root == tmp_path.resolve()
 
 
+def test_unexpanded_placeholders_count_as_unset(tmp_path):
+    env = {"BUS_URL": "${BUS_URL}", "BUS_API_TOKEN": "${BUS_API_TOKEN}", "BUS_AGENT_ID": "${BUS_AGENT_ID}",
+           "BUS_AGENT_SUFFIX": "${BUS_AGENT_SUFFIX}", "BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path)}
+    cfg = m.Config.from_env(env, cwd=tmp_path)
+    assert cfg.bus_url == m.DEFAULT_BUS_URL
+    assert cfg.api_token == ""
+    assert "${" not in cfg.agent_id and "#" in cfg.agent_id
+
+
+def test_claude_project_dir_sets_repo_root(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    cfg = m.Config.from_env({"CLAUDE_PROJECT_DIR": str(project), "BUS_REPO": "x"}, cwd=elsewhere)
+    assert cfg.repo_root == project.resolve()
+
+
 def test_repo_defaults_to_repo_root_name(tmp_path):
     root = tmp_path / "my-repo"
     root.mkdir()

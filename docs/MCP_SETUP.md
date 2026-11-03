@@ -40,7 +40,7 @@ This guide registers it for two Claude Code sessions, **agent A** and
 | `BUS_AGENT_ID` | `<user>@<host>` | This agent's name on the bus |
 | `BUS_AGENT_SUFFIX` | `auto` | `auto` appends `#<6 hex>` per process; `0` keeps the name exact |
 | `BUS_REPO` | origin remote's repo name | Lock scope. Every clone and worktree of a repo shares it |
-| `BUS_REPO_ROOT` | git top level of the working directory | Used to turn absolute paths into repo-relative ones |
+| `BUS_REPO_ROOT` | git top level of `CLAUDE_PROJECT_DIR`, else of the working directory | Used to turn absolute paths into repo-relative ones |
 | `BUS_HTTP_TIMEOUT` | `15` | Seconds per HTTP call, on top of any wait |
 
 **Why the suffix.** Locks held by the same identity never conflict, so an
@@ -53,58 +53,37 @@ the session's own id is shown in `list_locks` and in the server instructions.
 ## 3. Give each session its own checkout
 
 Two agents editing one working copy share one git index, so their commits
-interfere even when their files don't. Give each session a git worktree:
+interfere even when their files don't. Claude Code's docs describe running
+parallel sessions each in its own checkout
+([worktrees](https://code.claude.com/docs/en/worktrees)). Either let Claude
+Code create one per session:
 
 ```bash
 cd /path/to/your-repo
-git worktree add ../your-repo-agent-b -b agent-b
+claude -w agent-a        # creates .claude/worktrees/agent-a on branch worktree-agent-a
+claude -w agent-b        # second terminal
 ```
 
-Both worktrees resolve to the same lock scope (`BUS_REPO` defaults to the
-origin remote's repo name), so their locks see each other.
+(add `.claude/worktrees/` to `.gitignore`), or make them yourself with
+`git worktree add ../your-repo-agent-b -b agent-b`.
 
-## 4. Register the server for each session
+Every worktree resolves to the same lock scope, because `BUS_REPO` defaults to
+the origin remote's repo name, so their locks see each other.
 
-### Option A: per-session local registration (simplest)
+## 4. Register the server
 
-Local scope is stored per project directory, so each worktree gets its own
-registration and its own `BUS_AGENT_ID`.
+### Recommended: one `.mcp.json`, identity from the shell
 
-Agent A, in the main checkout:
-
-```bash
-cd /path/to/your-repo
-claude mcp add iac-bus --scope local \
-  -e BUS_URL=http://127.0.0.1:8101 \
-  -e BUS_API_TOKEN=devtoken \
-  -e BUS_AGENT_ID=claude.your-repo.a \
-  -- /path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py
-claude
-```
-
-Agent B, in the worktree:
-
-```bash
-cd /path/to/your-repo-agent-b
-claude mcp add iac-bus --scope local \
-  -e BUS_URL=http://127.0.0.1:8101 \
-  -e BUS_API_TOKEN=devtoken \
-  -e BUS_AGENT_ID=claude.your-repo.b \
-  -- /path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py
-claude
-```
-
-### Option B: one shared `.mcp.json`, identity from the shell
-
-Commit one project-scoped config and pass the identity when starting each
-session. `${VAR:-default}` is expanded by Claude Code. Keep the token out of
-the file:
+Commit one project-scoped config at the repo root. Claude Code expands
+`${VAR}` and `${VAR:-default}` in `command`, `args` and `env`, so each session
+takes its identity from the environment it was started with. Set every
+variable in `env`; don't rely on the server inheriting your shell. Keep the
+token out of the file:
 
 ```json
 {
   "mcpServers": {
     "iac-bus": {
-      "type": "stdio",
       "command": "/path/to/iac-bus/venv/bin/python",
       "args": ["/path/to/iac-bus/mcp_server.py"],
       "env": {
@@ -117,22 +96,54 @@ the file:
 }
 ```
 
+Start the two sessions with different ids:
+
 ```bash
 # terminal 1
-cd /path/to/your-repo && BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.a claude
+cd /path/to/your-repo && BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.your-repo.a claude -w agent-a
 # terminal 2
-cd /path/to/your-repo-agent-b && BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.b claude
+cd /path/to/your-repo && BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.your-repo.b claude -w agent-b
 ```
 
-Claude Code asks once before it trusts a project-scoped server. Even if both
-sessions start without `BUS_AGENT_ID`, the per-process suffix keeps them
-distinct.
+Notes:
+- Claude Code asks once before it trusts a project-scoped server
+  (`claude mcp reset-project-choices` resets that). `claude -p` loads it
+  without asking.
+- If a variable is unset and has no default, Claude Code passes the literal
+  text `${VAR}`. The adapter treats that as unset, so a missing token means
+  "no token", not a token spelled `${BUS_API_TOKEN}`.
+- Even if both sessions start without `BUS_AGENT_ID`, the per-process suffix
+  keeps their identities distinct.
+
+### Alternative: local registration from the CLI
+
+Local scope is stored per project path in `~/.claude.json`. Run this once in
+each checkout, with a different `BUS_AGENT_ID`. The documented form is
+`claude mcp add [options] <name> -- <command> [args...]`: options go before the
+name, `--env` takes several `KEY=value` pairs, and another option must sit
+between the last pair and the name:
+
+```bash
+cd /path/to/your-repo-agent-b
+claude mcp add \
+  --env BUS_URL=http://127.0.0.1:8101 BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.your-repo.b \
+  --scope local \
+  iac-bus -- /path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py
+```
+
+If your Claude Code build parses `--env` differently, use
+`claude mcp add-json` with an `env` object instead
+([MCP docs](https://code.claude.com/docs/en/mcp)). A local entry wins over a
+project `.mcp.json` entry with the same name; entries are not merged.
 
 ### Check it
 
-Inside each session, `/mcp` should list `iac-bus` as connected with 13 tools.
-From a shell, `claude mcp list` and `claude mcp get iac-bus` show the
-registration.
+- Inside each session, `/mcp` should show `iac-bus` connected with 13 tools.
+- From a shell, `claude mcp list` shows the status and `claude mcp get iac-bus`
+  shows the entry and any issue.
+- For spawn problems, start with `claude --debug='mcp'`.
+- Claude Code sets `CLAUDE_PROJECT_DIR` for the servers it spawns; the adapter
+  uses it to find the repo root. Set `BUS_REPO_ROOT` to override.
 
 ## 5. Tell the agents the rules
 
@@ -189,7 +200,10 @@ Then tell the agent to `claim_work` from queue `your-repo-tasks`.
 - When a session ends, the adapter releases every lock it still holds.
   If the process is killed, its locks expire after their `ttl_seconds`
   (default 600 through the adapter).
-- `acquire_lock` and `read_messages` wait at most 30 seconds per call.
+- `acquire_lock`, `read_messages` and `request_decision` wait at most 30
+  seconds per call. That is inside Claude Code's default MCP tool timeouts
+  (calls only move to the background after 2 minutes), so no timeout settings
+  need changing.
 - A lock does not stop a file write; it is a promise between cooperating
   agents. `check_lock` before commit catches a lock that expired mid-edit.
 - Identity is the name each adapter sends, trusted under the shared token.
