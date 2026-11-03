@@ -26,6 +26,11 @@ Configuration (environment):
 An unexpanded ``${VAR}`` placeholder (what Claude Code leaves in a .mcp.json
 ``env`` entry when VAR is unset) counts as unset.
   BUS_HTTP_TIMEOUT  seconds per HTTP call, on top of any wait (default 15)
+  BUS_APPROVAL_FOR  comma-separated steps that need a supervisor's approval
+                    through request_decision, even when the task asks for
+                    them (default: deleting or renaming files, merging,
+                    deploying, changing a public API or schema); "none"
+                    turns the policy off
   BUS_RUN_TOKEN     a run token minted by a launcher; used instead of
                     registering a run at startup
   BUS_RUN_REGISTER  "1" (default) registers a run at startup and sends its
@@ -82,6 +87,12 @@ DEFAULT_BUS_URL = "http://127.0.0.1:8091"
 DEFAULT_HTTP_TIMEOUT = 15.0
 DEFAULT_LOCK_TTL = 600
 MAX_WAIT_SECONDS = 30
+DEFAULT_APPROVAL_FOR = (
+    "deleting or renaming files",
+    "merging",
+    "deploying",
+    "changing a public API or schema",
+)
 RUN_TTL_SECONDS = 3600
 HEARTBEAT_SECONDS = 300
 DECISION_CHANNEL = "decisions"
@@ -189,6 +200,7 @@ class Config:
     agent_handle: str = ""
     run_token: str = ""
     register_run: bool = True
+    approval_for: Tuple[str, ...] = DEFAULT_APPROVAL_FOR
 
     def __post_init__(self) -> None:
         if not self.agent_handle:
@@ -205,6 +217,13 @@ class Config:
         repo_root = Path(get("BUS_REPO_ROOT") or _git_toplevel(start) or start).resolve()
         repo = get("BUS_REPO") or detect_repo_name(repo_root) or repo_root.name or "default"
         handle = get("BUS_AGENT_ID") or _default_agent_id()
+        approval_raw = get("BUS_APPROVAL_FOR")
+        if not approval_raw:
+            approval_for: Tuple[str, ...] = DEFAULT_APPROVAL_FOR
+        elif approval_raw.lower() in _FALSEY:
+            approval_for = ()
+        else:
+            approval_for = tuple(item.strip() for item in approval_raw.split(",") if item.strip())
         return cls(
             bus_url=(get("BUS_URL") or DEFAULT_BUS_URL).rstrip("/"),
             api_token=get("BUS_API_TOKEN"),
@@ -215,6 +234,7 @@ class Config:
             agent_handle=handle,
             run_token=get("BUS_RUN_TOKEN"),
             register_run=(get("BUS_RUN_REGISTER") or "1").lower() not in _FALSEY,
+            approval_for=approval_for,
         )
 
 
@@ -917,7 +937,9 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
         "Ask a supervisor or human to decide before a risky or irreversible step: deleting files, "
         "changing a public API or schema, merging, deploying, or anything outside your task. Give the "
         "question and options. With wait_seconds (max 30) it waits for the answer; otherwise call "
-        "check_decision later with the returned conversation_id. Do not take the step without an answer."
+        "check_decision later with the returned conversation_id. Do not take the step without an answer. "
+        "Steps listed in the server's approval policy always need an approved answer first, even when your "
+        "task tells you to take them and even when they look safe."
     ),
     "check_decision": "Check whether a decision you requested with request_decision has been answered.",
     "report_status": (
@@ -942,6 +964,18 @@ def _as_tool_error(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def approval_policy_text(steps: Tuple[str, ...]) -> str:
+    """The supervision rule appended to the server instructions."""
+    if not steps:
+        return ""
+    return (
+        "APPROVAL POLICY for this repo: before " + "; ".join(steps) + ", call request_decision with "
+        "wait_seconds=30 and proceed only if the answer has approved=true. This applies even when your task "
+        "explicitly asks for the step and even when it looks safe or reversible. If the answer is no or still "
+        "pending, do not take the step; report that you are waiting for approval."
+    )
+
+
 def build_server(tools: BusTools):
     from mcp.server import MCPServer
 
@@ -954,6 +988,9 @@ def build_server(tools: BusTools):
         "release_lock(path). Ask with request_decision before risky or irreversible steps. When you "
         "finish: release_lock(all=true) and report_status(completed)."
     )
+    policy = approval_policy_text(tools.config.approval_for)
+    if policy:
+        instructions = f"{instructions} {policy}"
     server = MCPServer(name="iac-bus", instructions=instructions, version=get_version())
     for name, description in TOOL_DESCRIPTIONS.items():
         server.add_tool(_as_tool_error(getattr(tools, name)), name=name, description=description)

@@ -15,6 +15,37 @@ Captain-approved public hostname: **`iac-bus.knowshowgo.com`**.
 | DNS | `iac-bus.knowshowgo.com` **not resolving** — create A → `129.153.192.75` |
 | Sibling reference | `knowshowgo.com` / `api.knowshowgo.com` → `129.153.118.145` (`ksg-main-eb91`) |
 
+## Coordination dev VM (measured 2026-11-03)
+
+A second VM runs the coordination branch (locks, MCP adapter, run tokens) so
+the production bus above stays untouched.
+
+| Field | Value |
+| --- | --- |
+| Instance | `iac-bus-coord-dev` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
+| Public / private IP | `129.146.71.98` / `10.0.1.87` |
+| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `eebde41`, `/opt/iac-bus`, `iac-bus.service` |
+| Bus | `http://129.146.71.98:8101`, token required (`/health` open) |
+| Deployed by | OCI API only: `scripts/oci_launch_bus_vm.py` (cloud-init clones, installs, opens iptables, starts systemd) |
+| Tags | `created-by=claude-code-session`, `branch=...`, `git-sha=eebde411bb70` |
+
+Facts found while deploying:
+
+- The production VM `iac-bus-6c58` still serves an old build (`/health` returns
+  only `messages` and `status`). It has no Run Command plugin, and the only
+  Run Command IAM policy covers a different instance, so it cannot be updated
+  through the OCI API without its SSH login key or IAM changes.
+- The bus token for `iac-bus-coord-dev` is in its cloud-init `user_data`
+  (instance metadata). To read it without printing it to a shared log:
+  `oci compute instance get --instance-id <id> --query 'data.metadata."user_data"' --raw-output | base64 -d | grep BUS_API_TOKEN`.
+- Plain HTTP on `:8101` sends the token in clear text. The Claude Code cloud
+  egress proxy refuses to forward an `Authorization` header to a non-TLS port,
+  so cloud agents cannot use this bus until it has HTTPS. Plan:
+  `scripts/oci_launch_bus_vm.py --https` (Caddy + Let's Encrypt on
+  `<ip-with-dashes>.sslip.io`, bus bound to localhost), which needs ingress on
+  80 and 443 for this VM (an NSG passed with `--nsg-id`). Opening those ports is
+  an owner decision; the script never changes network rules.
+
 ## DNS cutover checklist
 
 1. Create A record: `iac-bus.knowshowgo.com` → `129.153.192.75` (TTL 300).

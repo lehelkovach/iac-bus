@@ -52,6 +52,10 @@ bash scripts/demo_two_agents.sh
 [B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
 ```
 
+Try it with real Claude Code sessions, whose prompts never mention the bus:
+`python scripts/claude_agents_trial.py` (needs the `claude` CLI; prints a
+pass/fail report and the model cost).
+
 Locks reduce collisions between agents. Git branches, CI and review stay the
 source of truth for code. Each adapter registers a run at startup, so the bus
 derives every agent's identity from its run token and one agent cannot release

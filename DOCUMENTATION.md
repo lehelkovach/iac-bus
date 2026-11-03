@@ -256,7 +256,12 @@ Decision and status messages use the `agent_contract.py` envelope
 its run token from then on, so the bus derives its identity; it heartbeats
 every 5 minutes, re-registers if the bus restarts, and ends the run (releasing
 its locks) on exit. `BUS_RUN_TOKEN` uses a launcher-minted token instead, and
-`BUS_RUN_REGISTER=0` turns run registration off.
+`BUS_RUN_REGISTER=0` turns run registration off. `BUS_APPROVAL_FOR` lists the
+steps the server instructions say need an approved `request_decision` first.
+
+`scripts/claude_agents_trial.py` runs real Claude Code sessions through the
+adapter against any bus (`BUS_URL`, `BUS_API_TOKEN`, or a throwaway local
+bus) and checks locks, decisions and the work queue on the bus and on disk.
 
 Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
 `bash scripts/demo_two_agents.sh`. Dependencies: `requirements-mcp.txt`
