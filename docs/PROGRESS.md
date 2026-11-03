@@ -97,9 +97,9 @@ its own branch and PR to `dev`, stacked on the previous phase.
 
 ### OCI deploy and Claude trials (2026-11-03)
 
-- `iac-bus-coord-dev` (`129.146.71.98:8101`) runs the stack tip, deployed
+- `iac-bus-coord-dev` (`129.146.71.34:8101`) runs the stack tip, deployed
   through the OCI API with `scripts/oci_launch_bus_vm.py`; `/health` reports
-  `0.2.0-dev` at `eebde41`. The production VM `iac-bus-6c58` is unchanged.
+  `0.2.0-dev` at `aeb329a` (Phase 4 included) and the A2A card is public. The production VM `iac-bus-6c58` is unchanged.
   Details and the HTTPS blocker: `docs/OCI-LIVE.md`.
 - `scripts/claude_agents_trial.py` runs real `claude -p` sessions through the
   MCP adapter. Prompts never mention the bus. First run (local bus, Sonnet):

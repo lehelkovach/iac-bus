@@ -23,11 +23,11 @@ the production bus above stays untouched.
 | Field | Value |
 | --- | --- |
 | Instance | `iac-bus-coord-dev` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
-| Public / private IP | `129.146.71.98` / `10.0.1.87` |
-| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `eebde41`, `/opt/iac-bus`, `iac-bus.service` |
-| Bus | `http://129.146.71.98:8101`, token required (`/health` open) |
+| Public / private IP | `129.146.71.34` / `10.0.1.140` (relaunched 2026-11-03 03:13 UTC with Phase 4) |
+| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `aeb329a` (locks, MCP, run tokens, A2A), `/opt/iac-bus`, `iac-bus.service` |
+| Bus | `http://129.146.71.34:8101`, token required (`/health` and `/.well-known/agent-card.json` open) |
 | Deployed by | OCI API only: `scripts/oci_launch_bus_vm.py` (cloud-init clones, installs, opens iptables, starts systemd) |
-| Tags | `created-by=claude-code-session`, `branch=...`, `git-sha=eebde411bb70` |
+| Tags | `created-by=oci_launch_bus_vm.py`, `branch=claude/iac-bus-coordination-phases-vhy9iw` |
 
 Facts found while deploying:
 
