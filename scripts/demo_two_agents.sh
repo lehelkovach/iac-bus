@@ -49,5 +49,6 @@ if [[ -z "${BUS_URL:-}" ]]; then
 fi
 
 export BUS_URL BUS_API_TOKEN="${BUS_API_TOKEN:-}"
-# The MCP servers log one startup line each to stderr; keep the transcript clean.
-"${PYTHON}" scripts/demo_two_agents.py 2> >(grep -v '^iac-bus MCP adapter:' >&2)
+# The MCP servers log a startup line and refused tool calls to stderr; the
+# transcript already shows both, so keep stderr for real errors only.
+"${PYTHON}" scripts/demo_two_agents.py 2> >(grep -v -E "^(iac-bus MCP adapter:|Tool '[a-z_]+' failed:)" >&2)

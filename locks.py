@@ -278,6 +278,24 @@ class MemoryLockTable:
         self._emit(events)
         return result, error
 
+    def release_agent(self, agent: str) -> List[Dict[str, Any]]:
+        """Release every lock held by ``agent`` (used when its run ends)."""
+        with self._cond:
+            now = self._clock()
+            events = self._expire_locked(now)
+            mine = [lock for lock in self._locks.values() if lock["agent"] == agent]
+            released = []
+            for lock in mine:
+                del self._locks[lock["lock_id"]]
+                view = public_view(lock)
+                view["released_at"] = now
+                events.append((EVENT_RELEASED, view))
+                released.append(view)
+            if mine:
+                self._cond.notify_all()
+        self._emit(events)
+        return released
+
     def validate(
         self,
         repo: str,

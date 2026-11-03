@@ -498,3 +498,118 @@ def test_work_queue_through_the_tools(bus_app):
     assert claimed["claimed"] is True and claimed["work"] == {"task": "fix"}
     assert worker.ack_work(claimed["message_id"])["ok"] is True
     assert worker.claim_work("work")["claimed"] is False
+
+
+# ------------------------------------------------- run tokens (Phase 2b)
+
+
+def _register_reply(handle="agent-a", run_id="abcdef0123456789", token="iacrun_T1"):
+    return {"success": True, "agent": {"agent_uuid": "u"}, "run": {"run_id": run_id},
+            "actor": f"{handle}#{run_id[:6]}", "run_token": token}
+
+
+def test_start_run_registers_and_switches_to_run_token():
+    s = FakeSession()
+    s.reply("POST", "/agents/register", 201, _register_reply())
+    s.reply("GET", "/bus/locks", 200, {"locks": [], "count": 0})
+    tools = _tools(s, agent_id="agent-a#zzzzzz")
+    assert tools.start_run() == "run token (registered at startup)"
+    reg = s.calls[0]
+    assert reg["json"]["handle"] == "agent-a"  # the handle, without the local suffix
+    assert reg["headers"]["Authorization"] == "Bearer tok"  # shared token registers
+    assert tools.agent_id == "agent-a#abcdef"
+    tools.list_locks()
+    assert s.calls[1]["headers"]["Authorization"] == "Bearer iacrun_T1"
+
+
+def test_start_run_falls_back_on_old_or_down_bus():
+    s = FakeSession()
+    s.reply("POST", "/agents/register", 201, {"success": True, "agent": {"agent_uuid": "u"}})
+    tools = _tools(s, agent_id="agent-a#zzzzzz")
+    assert tools.start_run() == "name (shared token)"
+    assert tools.agent_id == "agent-a#zzzzzz"
+    assert tools.client.run_token == ""
+
+    class Down:
+        def request(self, *a, **kw):
+            raise requests.ConnectionError("refused")
+
+    down = _tools(Down(), agent_id="agent-a#zzzzzz")
+    assert "registration failed" in down.start_run()
+    assert down.agent_id == "agent-a#zzzzzz"
+
+
+def test_start_run_with_launcher_token_uses_whoami():
+    s = FakeSession()
+    s.reply("GET", "/agents/whoami", 200, {"auth": "run", "actor": "worker#123456", "run": {"run_id": "123456ff"}})
+    tools = _tools(s, run_token="iacrun_FROM_LAUNCHER")
+    assert tools.start_run() == "run token (BUS_RUN_TOKEN)"
+    assert s.calls[0]["headers"]["Authorization"] == "Bearer iacrun_FROM_LAUNCHER"
+    assert tools.agent_id == "worker#123456"
+
+
+def test_rejected_run_token_reregisters_and_retries():
+    s = FakeSession()
+    s.reply("POST", "/agents/register", 201, _register_reply(token="iacrun_OLD"))
+    s.reply("GET", "/bus/locks", 401, {"error": "Unauthorized", "reason": "unknown run token"})
+    s.reply("POST", "/agents/register", 201, _register_reply(run_id="999999aaaa", token="iacrun_NEW"))
+    s.reply("GET", "/bus/locks", 200, {"locks": [], "count": 0})
+    tools = _tools(s)
+    tools.start_run()
+    out = tools.list_locks()
+    assert out["you"] == "agent-a#999999"
+    assert s.calls[3]["headers"]["Authorization"] == "Bearer iacrun_NEW"
+
+
+def test_exit_ends_the_run():
+    s = FakeSession()
+    s.reply("POST", "/agents/register", 201, _register_reply())
+    s.reply("POST", "/agents/runs/end", 200, {"success": True})
+    tools = _tools(s)
+    tools.start_run()
+    tools.release_all_quietly()
+    assert s.calls[-1]["path"] == "/agents/runs/end"
+    assert s.calls[-1]["headers"]["Authorization"] == "Bearer iacrun_T1"
+
+
+def test_config_reads_run_settings(tmp_path):
+    cfg = m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path), "BUS_AGENT_ID": "h",
+                             "BUS_RUN_REGISTER": "0", "BUS_RUN_TOKEN": "iacrun_x"}, cwd=tmp_path)
+    assert cfg.agent_handle == "h" and cfg.agent_id.startswith("h#")
+    assert cfg.register_run is False and cfg.run_token == "iacrun_x"
+
+
+@pytest.fixture
+def secured_bus(monkeypatch):
+    monkeypatch.setenv("BUS_API_TOKEN", "s3cret")
+    monkeypatch.delenv("IAC_BUS_STORE", raising=False)
+    if "server" in sys.modules:
+        del sys.modules["server"]
+    import server  # noqa: F401
+    srv = importlib.reload(sys.modules["server"])
+    srv._bus_messages.clear()
+    return srv.app
+
+
+def test_run_identity_end_to_end(secured_bus):
+    def adapter(handle):
+        cfg = _config(agent_id=f"{handle}#local1", api_token="s3cret")
+        tools = m.BusTools(m.BusClient(cfg, session=FlaskSession(secured_bus)), cfg)
+        assert tools.start_run() == "run token (registered at startup)"
+        return tools
+
+    a, b = adapter("claude.a"), adapter("claude.b")
+    assert a.agent_id.startswith("claude.a#") and a.agent_id != "claude.a#local1"
+
+    got = a.acquire_lock("src/app.py")
+    assert got["acquired"]
+    # B learns A's lock id and pretends to be A: the bus derives B from its run token.
+    b.agent_id = a.agent_id
+    with pytest.raises(m.BusError):
+        b.release_lock(lock_id=got["lock_id"], path="src/app.py")
+    assert b.acquire_lock("src/app.py")["held_by"] == a.agent_id
+
+    a.release_all_quietly()  # releases locks and ends A's run
+    assert b.acquire_lock("src/app.py")["acquired"] is True
+    whoami = secured_bus.test_client().get("/agents/whoami", headers={"Authorization": "Bearer " + b.client.run_token})
+    assert whoami.get_json()["actor"].startswith("claude.b#")

@@ -34,6 +34,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from locks import MemoryLockTable
+from runs import MemoryRunTable
 
 STATUS_PUBLISHED = "published"
 STATUS_PENDING = "pending"
@@ -75,8 +76,9 @@ class MemoryStore:
         self.messages: List[Dict[str, Any]] = messages if messages is not None else []
         self.agents: Dict[str, Dict[str, Any]] = agents if agents is not None else {}
         self._lock = threading.RLock()
-        # Path locks (locks.py). In memory in both backends for now.
+        # Path locks (locks.py) and runs (runs.py). In memory in both backends.
         self.locks = MemoryLockTable()
+        self.runs = MemoryRunTable()
 
     def close(self) -> None:
         return None
@@ -240,8 +242,10 @@ class SqliteStore:
                 os.makedirs(parent, exist_ok=True)
         self._lock = threading.RLock()
         # Path locks stay in memory even in this backend; a restart drops
-        # them. See the TODO(L5) in locks.py before persisting them.
+        # them. See the TODO(L5) in locks.py before persisting them. Runs
+        # (runs.py) are in memory too; clients register again after a restart.
         self.locks = MemoryLockTable()
+        self.runs = MemoryRunTable()
         # check_same_thread=False: Flask serves requests on worker threads;
         # every access is serialised by self._lock.
         self._conn = sqlite3.connect(db_path, check_same_thread=False)

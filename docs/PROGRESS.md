@@ -11,7 +11,7 @@ The plan of record for identity and coordination is
 | --- | --- | --- |
 | **L0** | HTTP bus, queues, orchestration jobs, local smoke/pytest | **Done** (master) |
 | **L1** | `wait_seconds`, richer `/health` + `/metrics`, structured logs, expanded smoke | **Done** on `dev` (PR #17) |
-| **L2** | Agent registry + per-run identity (ID1–ID2) | Stub `POST /agents/register` on `dev`; run tokens planned as coordination Phase 2b |
+| **L2** | Agent registry + per-run identity (ID1–ID2) | **Phase 2b in review**: run tokens, bus-derived identity; registry still a stub (no principals, no dedupe) |
 | **L3** | Tasks + dependency invalidation + provenance | Not started |
 | **L4** | Repo/path locks + fencing (ID3) | **Phase 1 in review**: in-memory locks, `/bus/locks/*`, fencing `validate` |
 | **L5** | Durable ledger (SQLite→Postgres), retries/DLQ, prod maturity | Partial: opt-in SQLite store on `dev` (PR #20); locks and jobs still in memory |
@@ -28,8 +28,8 @@ its own branch and PR to `dev`, stacked on the previous phase.
 | Phase | Scope | Branch | Status |
 | --- | --- | --- | --- |
 | 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review (PR #21) |
-| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review |
-| 2b | Per-run tokens; the bus derives the caller from its token | — | Planned |
+| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review (PR #22) |
+| 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | In review |
 | 3 | A2A mapping (design only), then pause for review | — | Planned |
 | 4 | A2A interop (Agent Card, JSON-RPC, card registration) | — | Waits for approval of Phase 3 |
 
@@ -68,6 +68,25 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Gates: `pytest -q` green with the SDK and without it (2 MCP-surface tests
   skip), `scripts/bus_smoke.sh` 15/15, demo exits 0.
 
+### Phase 2b facts
+
+- `POST /agents/register` now also starts a run and returns `run_token`
+  (`iacrun_...`, stored as a SHA-256 hash) and `actor` (`<handle>#<run>`).
+- A request with a run token authenticates as that run; `_actor_from_request`
+  returns the run's actor and ignores `sender` / `worker` / `agent` in the
+  body. The shared token keeps working with claimed names.
+- Runs slide-expire after `run_ttl_seconds` without use; `POST
+  /agents/heartbeat` extends them; `POST /agents/runs/end` revokes the token
+  and releases the run's locks. `GET /agents/whoami`, `GET /agents/runs`.
+- `BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` refuse the shared token.
+- The MCP adapter registers a run at startup, heartbeats, re-registers after
+  a bus restart, and ends its run on exit. `BUS_RUN_TOKEN` accepts a
+  launcher-minted token; `BUS_RUN_REGISTER=0` keeps the Phase 2 behaviour.
+- Runs are in memory in both store backends, like locks.
+- Not done (Track B): principals, grants, runs minting child runs, signatures.
+- Gates: `pytest -q` green, `scripts/bus_smoke.sh` 18/18, demo exits 0 and
+  shows a refused spoof.
+
 ## Dogfood evidence (local + nested)
 
 | Job | Result |
@@ -92,5 +111,5 @@ its own branch and PR to `dev`, stacked on the previous phase.
 1. DNS: A record `iac-bus.knowshowgo.com` → `129.153.192.75` (optional CNAME/www later).
 2. TLS: Caddy/nginx on VM for `:443` → bus `:8101` (or migrate prod listen to `:8091` behind proxy).
 3. Inject deploy secrets (`IAC_BUS_PROD_*` or `KSG_DEV_VM_*`) for CI hot/prod deploys.
-4. Review and merge coordination Phase 1 (locks) into `dev`, then Phase 2 (MCP).
+4. Review and merge coordination Phases 1, 2 and 2b into `dev` in order (#21, #22, then 2b).
 5. Dogfood two Claude Code sessions on one repo through the MCP adapter.

@@ -53,9 +53,10 @@ bash scripts/demo_two_agents.sh
 ```
 
 Locks reduce collisions between agents. Git branches, CI and review stay the
-source of truth for code. Identity is currently the name each agent sends, so
-treat the bus as cooperative; per-run tokens are the next step
-(`docs/IDENTITY-AND-AUTHORITY.md`).
+source of truth for code. Each adapter registers a run at startup, so the bus
+derives every agent's identity from its run token and one agent cannot release
+another's locks. Set `BUS_REQUIRE_RUN_TOKEN=1` to stop shared-token callers
+from naming themselves on `/bus/*`.
 
 ## Features
 - Simple REST endpoints for posting and polling messages
@@ -162,17 +163,21 @@ curl "http://<BUS_IP>:8091/bus/locks?repo=iac-bus&resource_prefix=src/" -H "Auth
 ```
 Lock events are posted to channel `locks` (`lock.acquired`, `lock.released`, `lock.expired`).
 
-### Register agent (registry stub)
+### Register agent and get a run token
 ```bash
 curl -X POST http://<BUS_IP>:8091/agents/register \
   -H "Authorization: Bearer $BUS_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"handle":"agent:cursor.iac-bus.0@web","role":"worker"}'
+# -> {"agent": {...}, "run": {...}, "actor": "agent:cursor.iac-bus.0@web#3f2a1c", "run_token": "iacrun_..."}
 ```
 
-Records go through the configured store: in-memory by default (`ephemeral: true`),
-or SQLite with `IAC_BUS_STORE=sqlite` (`ephemeral: false`, survives restart).
-Heartbeat, parent/root relationships and durable identity (M1) are still a follow-up.
+Send `Authorization: Bearer <run_token>` on later requests and the bus uses the
+run's `actor` as your sender, worker and lock holder, whatever names the body
+contains. `GET /agents/whoami`, `POST /agents/heartbeat`, `GET /agents/runs`
+and `POST /agents/runs/end` manage runs. The shared token keeps working;
+`BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` require run tokens. Agent records go
+through the configured store; runs are in memory.
 
 ## Environment
 
@@ -187,6 +192,9 @@ Heartbeat, parent/root relationships and durable identity (M1) are still a follo
 | `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll and lock waits |
 | `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
 | `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
+| `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use |
+| `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
+| `BUS_REQUIRE_RUN_TOKEN` | off | Require run tokens on `/bus/*` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
 | `BUS_VERSION` | `0.1.0` | Reported in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |

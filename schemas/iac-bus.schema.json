@@ -3,7 +3,7 @@
   "$id": "https://iac-bus.local/schemas/iac-bus.schema.json",
   "title": "IAC Bus Protocol",
   "type": "object",
-  "description": "Schema definitions for IAC Bus message, queue and lock endpoints.",
+  "description": "Schema definitions for IAC Bus message, queue, lock and run endpoints.",
   "$defs": {
     "MessageCreate": {
       "type": "object",
@@ -791,6 +791,212 @@
         },
         "message": {
           "$ref": "#/$defs/Lock"
+        }
+      }
+    },
+    "AgentRegisterRequest": {
+      "type": "object",
+      "description": "POST /agents/register with the shared token (or on an open bus). A run token cannot register.",
+      "properties": {
+        "handle": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:@/+-]{1,128}$",
+          "default": "agent",
+          "description": "Agent handle; the run's actor is '<handle>#<first 6 hex of run_id>'."
+        },
+        "agent_handle": {
+          "type": "string",
+          "description": "Alias of handle."
+        },
+        "role": {
+          "type": "string",
+          "default": "worker"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "medium": {
+          "enum": [
+            "web",
+            "slack",
+            "ide",
+            "api",
+            "automation",
+            "other",
+            ""
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "run_ttl_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 3600,
+          "description": "Sliding expiry; capped at BUS_RUN_TTL_MAX_SECONDS (default 86400)."
+        }
+      }
+    },
+    "Run": {
+      "type": "object",
+      "description": "A run as the bus shows it. Never contains the token or its hash.",
+      "required": [
+        "run_id",
+        "agent_uuid",
+        "handle",
+        "actor",
+        "status",
+        "started_at",
+        "last_seen_at",
+        "expires_at",
+        "ttl_seconds"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "agent_uuid": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "medium": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "ended",
+            "expired"
+          ]
+        },
+        "started_at": {
+          "type": "number"
+        },
+        "last_seen_at": {
+          "type": "number"
+        },
+        "expires_at": {
+          "type": "number"
+        },
+        "ttl_seconds": {
+          "type": "number"
+        },
+        "ended_at": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "token_hash"
+            ]
+          },
+          {
+            "required": [
+              "run_token"
+            ]
+          }
+        ]
+      }
+    },
+    "AgentRegisterResponse": {
+      "type": "object",
+      "description": "201 from POST /agents/register. run_token is shown once; send it as the bearer token.",
+      "required": [
+        "success",
+        "agent",
+        "run",
+        "actor",
+        "run_token"
+      ],
+      "properties": {
+        "success": {
+          "const": true
+        },
+        "agent": {
+          "type": "object",
+          "required": [
+            "agent_uuid",
+            "agent_handle"
+          ]
+        },
+        "run": {
+          "$ref": "#/$defs/Run"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "run_token": {
+          "type": "string",
+          "pattern": "^iacrun_"
+        }
+      }
+    },
+    "Whoami": {
+      "type": "object",
+      "description": "GET /agents/whoami. auth is 'run', 'shared' or 'open'.",
+      "required": [
+        "auth",
+        "actor",
+        "run"
+      ],
+      "properties": {
+        "auth": {
+          "enum": [
+            "run",
+            "shared",
+            "open"
+          ]
+        },
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Run"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RunList": {
+      "type": "object",
+      "description": "GET /agents/runs?include_ended=",
+      "required": [
+        "runs",
+        "count"
+      ],
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Run"
+          }
+        },
+        "count": {
+          "type": "integer"
         }
       }
     }

@@ -246,6 +246,33 @@ else
   bad "GET /bus/locks?repo=... expected 0 got ${remaining}"
 fi
 
+# 10) run tokens: the bus derives the caller from its token
+res_reg="$(lock_post /agents/register '{"handle":"smoke-run","role":"smoke","medium":"automation","run_ttl_seconds":120}')"
+run_token="$(lock_body "${res_reg}" | json_get 'd.get("run_token","")')"
+run_actor="$(lock_body "${res_reg}" | json_get 'd.get("actor","")')"
+if [[ "$(lock_code "${res_reg}")" == "201" && "${run_token}" == iacrun_* && "${run_actor}" == smoke-run#* ]]; then
+  ok "POST /agents/register -> 201 run token (actor=${run_actor})"
+else
+  bad "POST /agents/register expected 201 with run token got $(lock_code "${res_reg}")"
+fi
+RUN_AUTH="Authorization: Bearer ${run_token}"
+res_spoof="$(curl -sS -w '\n%{http_code}' -X POST "${BUS_URL}/bus/locks/acquire" -H "${RUN_AUTH}" \
+  -H 'Content-Type: application/json' -d "{\"repo\":\"${LOCK_REPO}\",\"resource\":\"run/x.py\",\"agent\":\"someone-else\"}")"
+spoof_agent="$(lock_body "${res_spoof}" | json_get 'd.get("agent","")')"
+if [[ "$(lock_code "${res_spoof}")" == "200" && "${spoof_agent}" == "${run_actor}" ]]; then
+  ok "run token caller claiming another name is recorded as itself"
+else
+  bad "derived identity expected agent=${run_actor} got $(lock_code "${res_spoof}") ${spoof_agent}"
+fi
+res_end="$(curl -sS -w '\n%{http_code}' -X POST "${BUS_URL}/agents/runs/end" -H "${RUN_AUTH}" -H 'Content-Type: application/json' -d '{}')"
+ended_locks="$(lock_body "${res_end}" | json_get '",".join(d.get("locks_released",[]))')"
+after_code="$(curl -sS -o /dev/null -w '%{http_code}' "${BUS_URL}/bus/locks" -H "${RUN_AUTH}")"
+if [[ "$(lock_code "${res_end}")" == "200" && "${ended_locks}" == "run/x.py" && "${after_code}" == "401" ]]; then
+  ok "ending a run releases its locks and revokes its token"
+else
+  bad "run end (code=$(lock_code "${res_end}") released=${ended_locks} after=${after_code})"
+fi
+
 echo
 echo "Smoke summary: ${pass} passed, ${fail} failed"
 if [[ "${fail}" -ne 0 ]]; then

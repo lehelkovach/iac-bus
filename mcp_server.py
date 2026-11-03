@@ -26,6 +26,19 @@ Configuration (environment):
 An unexpanded ``${VAR}`` placeholder (what Claude Code leaves in a .mcp.json
 ``env`` entry when VAR is unset) counts as unset.
   BUS_HTTP_TIMEOUT  seconds per HTTP call, on top of any wait (default 15)
+  BUS_RUN_TOKEN     a run token minted by a launcher; used instead of
+                    registering a run at startup
+  BUS_RUN_REGISTER  "1" (default) registers a run at startup and sends its
+                    run token, so the bus derives this agent's identity;
+                    "0" keeps the Phase 2 behaviour (shared token + name)
+
+Identity: at startup the adapter calls POST /agents/register with
+BUS_AGENT_ID as the handle and the shared token. The bus returns a run token
+and an actor name (``<handle>#<run>``); from then on every request carries the
+run token and the bus ignores names in request bodies. A heartbeat keeps the
+run alive while the process lives, and the run is ended (releasing its locks)
+on exit. If the bus is older or unreachable at startup, the adapter falls back
+to the shared token and the suffixed name.
 
 Run ``python mcp_server.py --check`` to print the resolved configuration and
 ping the bus without starting the MCP server.
@@ -69,6 +82,8 @@ DEFAULT_BUS_URL = "http://127.0.0.1:8091"
 DEFAULT_HTTP_TIMEOUT = 15.0
 DEFAULT_LOCK_TTL = 600
 MAX_WAIT_SECONDS = 30
+RUN_TTL_SECONDS = 3600
+HEARTBEAT_SECONDS = 300
 DECISION_CHANNEL = "decisions"
 STATUS_CHANNEL = "status"
 
@@ -171,6 +186,13 @@ class Config:
     repo: str
     repo_root: Path
     http_timeout: float = DEFAULT_HTTP_TIMEOUT
+    agent_handle: str = ""
+    run_token: str = ""
+    register_run: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.agent_handle:
+            self.agent_handle = self.agent_id.split("#", 1)[0]
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None, cwd: Optional[Path] = None) -> "Config":
@@ -182,13 +204,17 @@ class Config:
         start = Path(get("CLAUDE_PROJECT_DIR") or cwd).resolve()
         repo_root = Path(get("BUS_REPO_ROOT") or _git_toplevel(start) or start).resolve()
         repo = get("BUS_REPO") or detect_repo_name(repo_root) or repo_root.name or "default"
+        handle = get("BUS_AGENT_ID") or _default_agent_id()
         return cls(
             bus_url=(get("BUS_URL") or DEFAULT_BUS_URL).rstrip("/"),
             api_token=get("BUS_API_TOKEN"),
-            agent_id=session_agent_id(get("BUS_AGENT_ID"), get("BUS_AGENT_SUFFIX") or "auto"),
+            agent_id=session_agent_id(handle, get("BUS_AGENT_SUFFIX") or "auto"),
             repo=repo,
             repo_root=repo_root,
             http_timeout=float(get("BUS_HTTP_TIMEOUT") or DEFAULT_HTTP_TIMEOUT),
+            agent_handle=handle,
+            run_token=get("BUS_RUN_TOKEN"),
+            register_run=(get("BUS_RUN_REGISTER") or "1").lower() not in _FALSEY,
         )
 
 
@@ -203,6 +229,11 @@ class BusClient:
     def __init__(self, config: Config, session: Optional[Any] = None):
         self.config = config
         self.session = session or requests.Session()
+        # Set once a run is registered: requests then authenticate as the run.
+        self.run_token: str = ""
+        # Called once when the bus rejects the run token (bus restarted, run
+        # expired); returns True if it obtained a new one.
+        self.on_run_rejected: Optional[Callable[[], bool]] = None
 
     def request(
         self,
@@ -211,10 +242,13 @@ class BusClient:
         body: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
         wait_seconds: float = 0,
+        use_shared_token: bool = False,
+        _retried: bool = False,
     ) -> Tuple[int, Any]:
         headers = {"Content-Type": "application/json"}
-        if self.config.api_token:
-            headers["Authorization"] = f"Bearer {self.config.api_token}"
+        token = self.config.api_token if use_shared_token or not self.run_token else self.run_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         url = f"{self.config.bus_url}{path}"
         try:
             resp = self.session.request(
@@ -228,6 +262,11 @@ class BusClient:
         except requests.RequestException as exc:
             raise BusError(f"cannot reach the bus at {self.config.bus_url}: {exc}") from exc
         if resp.status_code == 401:
+            using_run = bool(self.run_token) and not use_shared_token
+            if using_run and not _retried and self.on_run_rejected and self.on_run_rejected():
+                return self.request(method, path, body, params, wait_seconds, _retried=True)
+            if using_run:
+                raise BusError("the bus rejected this session's run token (401) and re-registering failed")
             raise BusError("the bus rejected the API token (401); check BUS_API_TOKEN")
         if resp.status_code >= 500:
             raise BusError(f"bus error {resp.status_code} on {method} {path}: {resp.text[:300]}")
@@ -285,6 +324,96 @@ class BusTools:
         self._held: Dict[str, Dict[str, Any]] = {}
         self._claims: Dict[str, Dict[str, Any]] = {}
         self._cursors: Dict[str, str] = {}
+        self.run_id: str = ""
+        self.identity_source = "name (shared token)"
+        client.on_run_rejected = self._reregister
+
+    # --------------------------------------------------------- identity
+
+    def start_run(self) -> str:
+        """Get a run token so the bus derives this session's identity.
+
+        Returns a short description of what happened. Never raises: if the
+        bus is older or unreachable, the session keeps its suffixed name and
+        the shared token.
+        """
+        try:
+            if self.config.run_token:
+                self.client.run_token = self.config.run_token
+                _status, who = self.client.request("GET", "/agents/whoami")
+                if isinstance(who, dict) and who.get("actor"):
+                    self._adopt_run(who["run"], who["actor"])
+                    self.identity_source = "run token (BUS_RUN_TOKEN)"
+                    return self.identity_source
+                self.client.run_token = ""
+            if not self.config.register_run:
+                return self.identity_source
+            if self._register():
+                self.identity_source = "run token (registered at startup)"
+        except BusError as exc:
+            self.client.run_token = ""
+            self.identity_source = f"name (shared token); run registration failed: {exc}"
+        return self.identity_source
+
+    def _register(self) -> bool:
+        status, data = self.client.request(
+            "POST",
+            "/agents/register",
+            {
+                "handle": self.config.agent_handle,
+                "role": "coding-agent",
+                "medium": "ide",
+                "purpose": f"MCP adapter in {self.repo}",
+                "run_ttl_seconds": RUN_TTL_SECONDS,
+            },
+            use_shared_token=True,
+        )
+        if status == 201 and isinstance(data, dict) and data.get("run_token"):
+            self.client.run_token = data["run_token"]
+            self._adopt_run(data["run"], data["actor"])
+            return True
+        return False
+
+    def _adopt_run(self, run: Dict[str, Any], actor: str) -> None:
+        self.run_id = run.get("run_id", "")
+        self.agent_id = actor
+
+    def _reregister(self) -> bool:
+        """The bus rejected our run token (restart or expiry): get a new run.
+
+        The identity changes, and locks and leases held under the old one are
+        forgotten here (after a restart they are gone on the bus as well).
+        """
+        if not self.config.register_run or self.config.run_token == self.client.run_token:
+            return False
+        try:
+            ok = self._register()
+        except BusError:
+            return False
+        if ok:
+            with self._mutex:
+                self._held.clear()
+                self._claims.clear()
+        return ok
+
+    def heartbeat(self) -> bool:
+        if not self.client.run_token:
+            return False
+        try:
+            status, _data = self.client.request("POST", "/agents/heartbeat")
+        except BusError:
+            return False
+        return status == 200
+
+    def end_run(self) -> None:
+        """End this session's run; the bus releases any locks it still holds."""
+        if not self.client.run_token or not self.run_id:
+            return
+        try:
+            self.client.request("POST", "/agents/runs/end", {})
+        except BusError:
+            pass
+        self.client.run_token = ""
 
     # ----------------------------------------------------------- helpers
 
@@ -497,7 +626,7 @@ class BusTools:
             }
             for lock in data.get("locks", [])
         ]
-        return {"locks": locks, "count": len(locks), "you": self.agent_id}
+        return {"locks": locks, "count": len(locks), "you": self.agent_id, "identity": self.identity_source}
 
     # -------------------------------------------------------------- work
 
@@ -698,13 +827,15 @@ class BusTools:
     # ---------------------------------------------------------- lifecycle
 
     def release_all_quietly(self) -> None:
-        """Best-effort release of every lock this session holds (process exit)."""
+        """Best-effort clean-up on process exit: release locks, end the run."""
+        self.client.on_run_rejected = None
         for lock in self.held_locks():
             try:
                 self.client.request("POST", "/bus/locks/release", {"lock_id": lock["lock_id"], "agent": self.agent_id})
             except Exception:  # noqa: BLE001 - shutting down; nothing useful to do
                 pass
             self._forget(lock["lock_id"])
+        self.end_run()
 
 
 def _decision_answer(msg: Dict[str, Any], conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -817,7 +948,8 @@ def build_server(tools: BusTools):
     from version import get_version
 
     instructions = (
-        f"{LOCK_RULE} Your identity on the bus is {tools.agent_id} in repo {tools.repo}. Workflow: "
+        f"{LOCK_RULE} Your identity on the bus is {tools.agent_id} in repo {tools.repo} "
+        f"(identity source: {tools.identity_source}). Workflow: "
         "report_status(running) -> acquire_lock(path) -> edit -> check_lock(path) -> commit -> "
         "release_lock(path). Ask with request_decision before risky or irreversible steps. When you "
         "finish: release_lock(all=true) and report_status(completed)."
@@ -840,6 +972,8 @@ def _check(config: Config) -> int:
     try:
         status, health = client.request("GET", "/health")
         print(f"health: {status} {health.get('status') if isinstance(health, dict) else health}")
+        status, who = client.request("GET", "/agents/whoami")
+        print(f"auth: {who.get('auth') if isinstance(who, dict) else who}")
         status, locks = client.request("GET", "/bus/locks", params={"repo": config.repo})
         print(f"locks in {config.repo}: {locks.get('count')}")
     except BusError as exc:
@@ -854,14 +988,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     if "--check" in argv:
         return _check(config)
     tools = BusTools(BusClient(config), config)
+    source = tools.start_run()
     server = build_server(tools)
     print(
-        f"iac-bus MCP adapter: agent={config.agent_id} repo={config.repo} bus={config.bus_url}",
+        f"iac-bus MCP adapter: agent={tools.agent_id} repo={config.repo} bus={config.bus_url} identity={source}",
         file=sys.stderr,
     )
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(HEARTBEAT_SECONDS):
+            tools.heartbeat()
+
+    threading.Thread(target=beat, name="iac-bus-heartbeat", daemon=True).start()
     try:
         server.run()
     finally:
+        stop.set()
         tools.release_all_quietly()
     return 0
 
