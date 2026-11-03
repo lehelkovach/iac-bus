@@ -30,8 +30,8 @@ its own branch and PR to `dev`, stacked on the previous phase.
 | 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review (PR #21) |
 | 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review (PR #22) |
 | 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | In review (PR #23) |
-| 3 | A2A mapping (design only), then pause for review | `claude/iac-bus-p3-a2a-mapping-vhy9iw` | **Paused for review**: `docs/A2A_MAPPING.md` |
-| 4 | A2A interop (Agent Card, JSON-RPC, card registration) | — | Waits for approval of Phase 3 |
+| 3 | A2A mapping (design only), then pause for review | `claude/iac-bus-p3-a2a-mapping-vhy9iw` | In review (PR #24); approved 2026-11-03 |
+| 4 | A2A interop (Agent Card, JSON-RPC, card registration, grants, outbound bridge) | `claude/iac-bus-p4-a2a-vhy9iw` | In review |
 
 ### Phase 1 facts
 
@@ -119,6 +119,17 @@ its own branch and PR to `dev`, stacked on the previous phase.
   `docs/CLAUDE_TRIAL.md`.
 - Not yet run against the OCI bus: it needs HTTPS first (owner decision on
   opening 80/443 for that VM).
+
+### Phase 4 facts
+
+- Inbound: public Agent Card, `POST /a2a` (SendMessage, GetTask, ListTasks,
+  CancelTask), `POST /agents/a2a/register`, `GET /agents/a2a`; grants on runs
+  enforced on `/a2a` and `/bus/*`. Outbound: `scripts/a2a_bridge.py`.
+- Wire JSON is checked against the official `a2a-sdk` protobuf types in tests
+  (`requirements-a2a-test.txt`, CI only).
+- Gates: `pytest -q` green, `scripts/bus_smoke.sh` 20/20,
+  `scripts/a2a_curl_demo.sh` runs end to end (output in `docs/A2A_DEMO.md`).
+- A2A tasks are in memory, like locks and runs.
 
 ## Dogfood evidence (local + nested)
 

@@ -1612,7 +1612,7 @@ def agents_a2a_register():
     grants = _normalize_grants(data.get("grants"), errors)
     handle = data.get("handle")
     if handle is None and isinstance(card, dict) and isinstance(card.get("name"), str):
-        handle = "a2a." + re.sub(r"[^a-z0-9._-]+", "-", card["name"].lower()).strip("-")
+        handle = re.sub(r"[^a-z0-9._-]+", "-", card["name"].lower()).strip("-")
     if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
         errors.append("handle must be 1-128 chars of letters, digits and ._:@/+- (no '#')")
     credential_env = data.get("credential_env")

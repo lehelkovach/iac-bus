@@ -46,6 +46,34 @@ Facts found while deploying:
   80 and 443 for this VM (an NSG passed with `--nsg-id`). Opening those ports is
   an owner decision; the script never changes network rules.
 
+### Turning on HTTPS for the coordination VM
+
+Cloud agents need HTTPS before they can send a bearer token to the bus. The
+launch script does the VM side (Caddy, a Let's Encrypt certificate for
+`<ip-with-dashes>.sslip.io`, bus bound to localhost, `BUS_PUBLIC_URL` for the
+A2A card). Inbound 80 and 443 must be allowed first; this is an owner step
+because it opens ports to the internet:
+
+```bash
+# 1. A network security group in waydroid-vcn that allows only 80 and 443 (attach it to the bus VM only)
+oci network nsg create --compartment-id <compartment-ocid> --vcn-id <waydroid-vcn-ocid> \\
+  --display-name iac-bus-coord-dev-https
+oci network nsg rules add --nsg-id <nsg-ocid> --security-rules '[
+  {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK",
+   "tcpOptions":{"destinationPortRange":{"min":80,"max":80}}},
+  {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK",
+   "tcpOptions":{"destinationPortRange":{"min":443,"max":443}}}]'
+
+# 2. A fresh VM with HTTPS, then retire the plain-HTTP one
+python scripts/oci_launch_bus_vm.py --branch claude/iac-bus-coordination-phases-vhy9iw \\
+  --name iac-bus-coord-dev-https --https --nsg-id <nsg-ocid>
+# prints BUS_URL=https://<ip-with-dashes>.sslip.io; the token is in .oci-vm/iac-bus-coord-dev-https/bus_token
+
+# 3. Real Claude Code sessions against it
+BUS_URL=https://<ip-with-dashes>.sslip.io BUS_API_TOKEN="$(cat .oci-vm/iac-bus-coord-dev-https/bus_token)" \\
+  python scripts/claude_agents_trial.py --out docs/CLAUDE_TRIAL_OCI.md
+```
+
 ## DNS cutover checklist
 
 1. Create A record: `iac-bus.knowshowgo.com` → `129.153.192.75` (TTL 300).

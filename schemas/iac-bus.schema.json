@@ -1070,7 +1070,7 @@
         "handle": {
           "type": "string",
           "pattern": "^[A-Za-z0-9._:@/+-]{1,128}$",
-          "description": "Default: a2a.<card name slug>."
+          "description": "Default: a slug of the card name."
         },
         "grants": {
           "$ref": "#/$defs/Grants"

@@ -367,8 +367,8 @@ def test_register_by_inline_card(client):
     assert resp.status_code == 201
     data = resp.get_json()
     assert data["run_token"].startswith("iacrun_")
-    assert data["agent"]["handle"] == "a2a.partner-agent"
-    assert data["outbound_queue"] == "a2a.a2a.partner-agent"
+    assert data["agent"]["handle"] == "partner-agent"
+    assert data["outbound_queue"] == "a2a.partner-agent"
     assert data["agent"]["card"]["endpoint"] == "https://partner.example/a2a"
     assert data["run"]["grants"] == GRANTS
     again = _register_partner(client)

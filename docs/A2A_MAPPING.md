@@ -1,6 +1,6 @@
-# A2A mapping (design for review)
+# A2A mapping
 
-_Written 2026-11-03. Status: design only. No A2A code exists in this repo. Phase 4 waits for review of this document._
+_Written 2026-11-03. Status: **implemented** (Phase 4, approved 2026-11-03 with the recommended answers to §7). Section 8 lists what the code does where it differs from or adds to this design. Walkthrough: `docs/A2A_DEMO.md`._
 
 This maps the Agent2Agent protocol (A2A) onto iac-bus. It covers what each A2A concept becomes on the bus, what A2A lacks that the bus provides, what the bus would have to change, and a proposed Phase 4 scope with the decisions it needs.
 
@@ -191,3 +191,53 @@ Nothing in `agent_contract.py` has to change shape. `REQUEST_DECISION`, `PROVIDE
 | E | Card fetching: https only, with a host allowlist? | https only, no private IPs, with `BUS_A2A_ALLOW_HOSTS` for dev |
 | F | Serve the legacy `/.well-known/agent.json` alias? | Only if a client you care about needs it |
 | G | Turn on `BUS_REQUIRE_RUN_TOKEN` wherever A2A is exposed? | Yes. External agents must never hold the shared token. |
+
+## 8. As implemented
+
+Decisions taken: A capped blocking (30 s, then the live state), B hand-rolled
+JSON-RPC in Flask with `a2a-sdk` used only in tests, C both directions (4a
+inbound and 4b bridge), D deny-by-default grants, E https-only card fetch with
+no private addresses unless `BUS_A2A_ALLOW_HOSTS`, F no legacy `agent.json`
+alias, G `/a2a` accepts run tokens only.
+
+| Piece | Where |
+| --- | --- |
+| Protocol helpers, card, fetch guard, task table, client | `a2a_interop.py` (not `a2a.py`: that name would shadow the SDK package) |
+| Card, `/a2a`, registration, grants, task hooks | `server.py` |
+| Outbound bridge | `scripts/a2a_bridge.py` |
+| Tests | `tests/test_a2a.py`, `tests/test_a2a_bridge.py`; wire JSON is parsed with the SDK's protobuf types |
+
+Details that the design left open:
+
+- **Task ownership** is the caller's agent handle, not its run, so an agent
+  that re-registers keeps its tasks. Another caller gets `TaskNotFound`.
+- **Selecting a skill** uses `metadata.skill` on the request or message
+  (default `enqueue-work`), with `metadata.queue` and `metadata.lockPaths`.
+  A restricted agent with no explicit queue uses the first non-wildcard queue
+  in its grants.
+- **Results** come from the worker: `ack` takes an optional `result` and
+  `nack` an optional `reason`, and an orchestration `step.status` message may
+  carry `result` or `reason`. The MCP adapter's `ack_work` and `nack_work`
+  pass them through.
+- **Questions** link to a task through the work item: the adapter adds
+  `headers.work_message_id` to `request_decision` when the session holds one
+  claimed item. A `provide_decision` posted on the bus by anyone also returns
+  the task to working.
+- **Permission errors** use JSON-RPC code -32000 (implementation-defined
+  range) with `google.rpc.ErrorInfo` reason `PERMISSION_DENIED` and domain
+  `iac-bus`; A2A defines no permission code.
+- **Grants** are enforced on `/bus/*` as well as `/a2a`: channels for
+  messages, queues for claim, ack and nack, lock paths for acquire. Restricted
+  runs cannot post `orchestration.*` messages or list runs and agents. The
+  operator can also restrict any run with `grants` on `/agents/register`.
+- **Storage**: A2A task records are in memory, like locks and runs. Card and
+  grants are stored with the agent record, so with `IAC_BUS_STORE=sqlite`
+  registrations survive a restart (the run tokens do not).
+- **Bridge limits**: queue leases cannot be renewed, so run one bridge per bus
+  and keep remote tasks shorter than `--lease` (default 900 s). If a question
+  gets no decision within `decision_wait`, the bridge cancels the remote task
+  and fails the item.
+- **Cancel** removes a work item nobody has claimed, marks a job step
+  skipped, and posts `cancel_task` on `a2a.task.<id>` for a worker that has
+  already claimed it.
+
