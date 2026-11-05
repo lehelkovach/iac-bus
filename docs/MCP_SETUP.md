@@ -42,13 +42,21 @@ This guide registers it for two Claude Code sessions, **agent A** and
 | `BUS_REPO` | origin remote's repo name | Lock scope. Every clone and worktree of a repo shares it |
 | `BUS_REPO_ROOT` | git top level of `CLAUDE_PROJECT_DIR`, else of the working directory | Used to turn absolute paths into repo-relative ones |
 | `BUS_HTTP_TIMEOUT` | `15` | Seconds per HTTP call, on top of any wait |
+| `BUS_RUN_REGISTER` | `1` | Register a run at startup and use its token; `0` uses the shared token and the name |
+| `BUS_RUN_TOKEN` | empty | A run token minted by a launcher, used instead of registering |
+
+**Identity.** The adapter registers a run at startup and the bus names it
+`<BUS_AGENT_ID>#<run>`, for example `claude.a#3f2a1c`. Every later request
+carries the run token, and the bus uses that name whatever the request body
+says. If the bus is older or unreachable at startup, the adapter falls back
+to the shared token and a locally suffixed name.
 
 **Why the suffix.** Locks held by the same identity never conflict, so an
 agent can lock `src/` and then `src/app.py`. If two sessions shared one
 identity, for example through a committed `.mcp.json`, they could edit the same
-file at once. The random suffix makes every session distinct even when the
-configuration is identical. With the suffix, the bus sees `claude.a#3f2a1c`, and
-the session's own id is shown in `list_locks` and in the server instructions.
+file at once. The run suffix (or, without run tokens, a random local suffix)
+makes every session distinct even when the configuration is identical. The
+session's own id is shown by `list_locks` and in the server instructions.
 
 ## 3. Give each session its own checkout
 
@@ -206,8 +214,11 @@ Then tell the agent to `claim_work` from queue `your-repo-tasks`.
   need changing.
 - A lock does not stop a file write; it is a promise between cooperating
   agents. `check_lock` before commit catches a lock that expired mid-edit.
-- Identity is the name each adapter sends, trusted under the shared token.
-  Per-run tokens, where the bus derives the identity, are the next step.
+- Identity comes from a run token. At startup the adapter registers a run
+  with `BUS_AGENT_ID` as the handle and becomes `<handle>#<run>`; the bus then
+  ignores any name in its requests. It heartbeats every 5 minutes, registers
+  again if the bus restarts (the identity changes), and ends the run on exit.
+  Set `BUS_REQUIRE_RUN_TOKEN=1` on the bus so nothing else can name itself.
 
 ## 8. Try it without Claude Code
 

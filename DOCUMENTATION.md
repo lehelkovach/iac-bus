@@ -76,6 +76,29 @@ Authorization: Bearer <token>
 
 If `BUS_API_TOKEN` is empty, the API accepts requests without authentication.
 
+### Run tokens: identity derived by the bus
+
+The shared token says "this caller may use the bus", not who the caller is:
+with it, the `sender`, `worker` and `agent` names in a request are trusted
+as sent. Run tokens fix that.
+
+1. A holder of the shared token (a human, a launcher, or the MCP adapter at
+   startup) calls `POST /agents/register` and gets a `run_token`
+   (`iacrun_...`, shown once) plus an `actor` name `<handle>#<run>`.
+2. Requests that send `Authorization: Bearer <run_token>` authenticate as
+   that run. The bus uses the run's `actor` as the sender, worker and lock
+   holder, and ignores the names in the body. One run cannot post as,
+   release the locks of, or ack the leases of another.
+3. A run expires `run_ttl_seconds` after its last request or heartbeat. Ending
+   it (`POST /agents/runs/end`) revokes the token and releases its locks.
+4. Only the token's SHA-256 hash is stored. Runs are in memory in both store
+   backends; after a restart clients register again (the adapter does this
+   automatically).
+
+The shared token keeps working as before. `BUS_REQUIRE_RUN_TOKEN=1` makes
+`/bus/*` refuse it (403), so every agent must hold a run token; the shared
+token can then only register and manage runs under `/agents/*`.
+
 ## API Reference
 
 ### POST /bus/messages
@@ -229,15 +252,49 @@ Tools: `acquire_lock`, `release_lock`, `renew_lock`, `check_lock`,
 `read_messages`, `request_decision`, `check_decision`, `report_status`.
 Decision and status messages use the `agent_contract.py` envelope
 (`request_decision`, `provide_decision`, `report_status`) on channels
-`decisions` and `status`. On exit the adapter releases the locks it holds.
+`decisions` and `status`. At startup the adapter registers a run and sends
+its run token from then on, so the bus derives its identity; it heartbeats
+every 5 minutes, re-registers if the bus restarts, and ends the run (releasing
+its locks) on exit. `BUS_RUN_TOKEN` uses a launcher-minted token instead, and
+`BUS_RUN_REGISTER=0` turns run registration off.
 
 Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
 `bash scripts/demo_two_agents.sh`. Dependencies: `requirements-mcp.txt`
 (Python 3.10+; not needed by the bus server).
 
 ### POST /agents/register
-Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
-`agent_uuid` + `agent_handle`. Not durable across restarts.
+Registers an agent and starts a run for it. Needs the shared token (or an
+open bus); a run token gets `403`.
+
+Request: `{"handle", "role"?, "purpose"?, "medium"?: web|slack|ide|api|automation|other,
+"session_id"?, "run_ttl_seconds"? (default 3600, capped at 86400)}`. `handle` is
+1-128 characters of letters, digits and `._:@/+-`.
+
+`201`: `{"success": true, "agent": {...}, "run": {...}, "actor", "run_token"}`.
+The agent record goes through the configured store (`ephemeral` is false with
+SQLite); the run is in memory.
+
+```bash
+curl -s -X POST http://127.0.0.1:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"handle":"claude.iac-bus.a","role":"coding-agent","medium":"ide"}'
+```
+
+### GET /agents/whoami
+`{"auth": "run"|"shared"|"open", "actor", "run"}` for the caller.
+
+### POST /agents/heartbeat
+With a run token: extends the run's expiry and returns it. Any request with
+the run token extends it too.
+
+### GET /agents/runs
+`?include_ended=true` to include ended and expired runs. Never returns tokens
+or hashes.
+
+### POST /agents/runs/end
+With a run token: ends the caller's own run. With the shared token: ends the
+run named by `{"run_id"}`. The token stops working at once and the run's
+locks are released (`lock.released` events). Returns `locks_released`.
 
 ## Configuration
 
@@ -251,6 +308,9 @@ Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
 | `BUS_WAIT_SECONDS_MAX` | `30` | Cap for long-poll and lock `wait_seconds` |
 | `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
 | `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
+| `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use when `run_ttl_seconds` is omitted |
+| `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
+| `BUS_REQUIRE_RUN_TOKEN` | off | When on, `/bus/*` refuses the shared token; agents must use run tokens |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 | `BUS_VERSION` | `0.1.0` | Version string in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |
@@ -455,9 +515,12 @@ python3 -m venv venv
   with the default memory store, each process maintains its own message
   list. With the SQLite store, workers share the database file, but the
   long-poll wake-up is per process (a waiting poll re-checks every 250 ms).
-- There is no fine-grained access control. Lock ownership is checked against
-  the `agent` name the caller sends, which any holder of the shared token can
-  claim; per-run tokens are the planned fix (`docs/IDENTITY-AND-AUTHORITY.md`).
+- There is no fine-grained access control. Callers using the shared token
+  name themselves, so lock ownership is only as strong as that name; callers
+  using run tokens cannot claim another identity. Turn on
+  `BUS_REQUIRE_RUN_TOKEN` to require run tokens on `/bus/*`. Roles and grants
+  per run are Track B in `docs/IDENTITY-AND-AUTHORITY.md`.
+- Runs, like locks, are in memory in both store backends.
 - Path locks are per process. Run a single process (the default
   `python server.py`) when agents rely on locks.
 

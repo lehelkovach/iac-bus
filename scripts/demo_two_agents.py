@@ -67,7 +67,7 @@ async def main() -> int:
         held = result_of(await a.call_tool("list_locks", {}))
         a_id = held["you"]
         b_id = result_of(await b.call_tool("list_locks", {}))["you"]
-        print(f"agent A is {a_id}")
+        print(f"agent A is {a_id}   identity: {held['identity']}")
         print(f"agent B is {b_id}\n")
         expect(a_id != b_id, "agents must have distinct identities")
 
@@ -82,6 +82,14 @@ async def main() -> int:
         say("B", f"  -> refused (HTTP 409): held by {got_b['held_by']} ({got_b['holder_mode']}, "
                  f"\"{got_b['holder_reason']}\"), expires in {got_b['expires_in_seconds']}s")
         say("B", f"     tool says: {got_b['next']}")
+
+        spoof = await b.call_tool("release_lock", {"lock_id": got_a["lock_id"], "path": PATH})
+        if "run token" in held["identity"]:
+            expect(spoof.is_error, "B must not be able to release A's lock")
+            say("B", f"release_lock(lock_id=<A's lock id>) -> refused: {spoof.content[0].text.split(': ', 1)[-1]}")
+            say("B", "     (the bus knows B from its run token, whatever name B sends)")
+        else:
+            say("B", "(skipping the spoof check: this bus has no run tokens)")
 
         waited = {}
 

@@ -3,8 +3,10 @@
 Inter-Agent Communication Bus (IAC Bus).
 """
 
+import hmac
 import logging
 import os
+import re
 import resource
 import threading
 import time
@@ -22,6 +24,7 @@ from locks import (
     normalize_resource,
     public_view,
 )
+from runs import looks_like_run_token
 from orchestration import (
     JobSpec,
     StepStatus,
@@ -60,6 +63,12 @@ BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
 BUS_WAIT_SECONDS_MAX = int(os.environ.get("BUS_WAIT_SECONDS_MAX", "30"))
 BUS_LOCK_TTL_DEFAULT_SECONDS = float(os.environ.get("BUS_LOCK_TTL_DEFAULT_SECONDS", "300"))
 BUS_LOCK_TTL_MAX_SECONDS = float(os.environ.get("BUS_LOCK_TTL_MAX_SECONDS", "3600"))
+BUS_RUN_TTL_DEFAULT_SECONDS = float(os.environ.get("BUS_RUN_TTL_DEFAULT_SECONDS", "3600"))
+BUS_RUN_TTL_MAX_SECONDS = float(os.environ.get("BUS_RUN_TTL_MAX_SECONDS", "86400"))
+# When true, /bus/* only accepts run tokens; the shared token can still
+# register runs and manage them under /agents/*.
+BUS_REQUIRE_RUN_TOKEN = os.environ.get("BUS_REQUIRE_RUN_TOKEN", "").strip().lower() in {"1", "true", "yes", "on"}
+RUN_MEDIA = ("web", "slack", "ide", "api", "automation", "other")
 LOCK_EVENTS_CHANNEL = "locks"
 LOCK_REASON_MAX_CHARS = 500
 BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0")
@@ -101,18 +110,45 @@ _metrics = {
     "locks_renewed": 0,
     "locks_released": 0,
     "locks_expired": 0,
+    "runs_registered": 0,
+    "runs_ended": 0,
     "post_latency_ms": deque(maxlen=_LATENCY_WINDOW),
     "poll_latency_ms": deque(maxlen=_LATENCY_WINDOW),
     "claim_latency_ms": deque(maxlen=_LATENCY_WINDOW),
 }
 
 
+def _bearer_token():
+    header = request.headers.get("Authorization", "")
+    return header[len("Bearer "):].strip() if header.startswith("Bearer ") else header.strip()
+
+
 def _require_auth():
-    if not BUS_API_TOKEN:
+    """Authenticate the request and record who is calling.
+
+    * A run token (``iacrun_...``) authenticates as that run: ``g.run`` is
+      set and the caller's identity comes from it (see ``_actor_from_request``).
+    * Otherwise the shared ``BUS_API_TOKEN`` is required when configured;
+      the caller's identity is then the name it sends.
+    * With ``BUS_REQUIRE_RUN_TOKEN``, ``/bus/*`` refuses the shared token.
+    """
+    g.run = None
+    token = _bearer_token()
+    if looks_like_run_token(token):
+        run, reason = _store.runs.authenticate(token)
+        if run is None:
+            return jsonify({"error": "Unauthorized", "reason": reason}), 401
+        g.run = run
+        g.auth = "run"
         return None
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if token != BUS_API_TOKEN:
+    if BUS_API_TOKEN and not hmac.compare_digest(token.encode("utf-8"), BUS_API_TOKEN.encode("utf-8")):
         return jsonify({"error": "Unauthorized"}), 401
+    g.auth = "shared" if BUS_API_TOKEN else "open"
+    if BUS_REQUIRE_RUN_TOKEN and request.path.startswith("/bus/"):
+        return jsonify({
+            "error": "run token required",
+            "hint": "POST /agents/register with the shared token, then send the returned run_token as the bearer token",
+        }), 403
     return None
 
 
@@ -120,6 +156,8 @@ def _require_auth():
 def _auth_middleware():
     g.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
     g.request_started = time.time()
+    g.run = None
+    g.auth = "none"
     if request.path in ("/health", "/metrics"):
         return None
     return _require_auth()
@@ -145,11 +183,14 @@ def _request_logging(response):
 def _actor_from_request(claimed):
     """Who is calling. Every handler learns the caller's identity here.
 
-    Today this is the name the caller sends (``sender``, ``worker`` or
-    ``agent``), trusted as-is under the shared API token. When per-run tokens
-    land, this returns the identity bound to the caller's token instead and
-    no handler has to change.
+    A caller authenticated with a run token is always its run's ``actor``;
+    whatever name it sends (``sender``, ``worker`` or ``agent``) is ignored,
+    so one run cannot act as another. A caller using the shared token is
+    trusted to name itself, as before run tokens existed.
     """
+    run = getattr(g, "run", None)
+    if run:
+        return run["actor"]
     if not isinstance(claimed, str):
         return None
     claimed = claimed.strip()
@@ -868,47 +909,142 @@ def bus_lock_list():
     return jsonify({"locks": locks, "count": len(locks)})
 
 
+_HANDLE_RE = re.compile(r"^[A-Za-z0-9._:@/+-]{1,128}$")
+
+
+def _optional_str(data, key, errors, default=""):
+    value = data.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        errors.append(f"{key} must be string")
+        return default
+    return value.strip()
+
+
 @app.route("/agents/register", methods=["POST"])
 def agents_register():
     """
-    Agent registration (ACP Stage 3 hook).
+    Register an agent and start a run for it.
 
-    Records go through the configured store: in-memory by default, or SQLite
-    when IAC_BUS_STORE=sqlite (then `ephemeral` is false and the record
-    survives a restart). Heartbeat, parent/root relationships and durable
-    identity (M1) are still TODO.
+    Returns the agent record (as before) plus a new run: ``run`` (public
+    record), ``actor`` (the identity the bus will use for this run) and
+    ``run_token`` (shown once). Send the run token as the bearer token on
+    later requests and the bus derives the caller from it.
+
+    Only the shared token (or an open bus) can register; a run token cannot
+    mint runs. Agent records go through the configured store; runs are in
+    memory in both backends.
     """
-    data = request.get_json() or {}
+    if getattr(g, "run", None):
+        return jsonify({"error": "run tokens cannot register runs; use the shared token"}), 403
+    data = request.get_json(silent=True) or {}
+    errors = []
     handle = data.get("handle") or data.get("agent_handle") or "agent"
-    if not isinstance(handle, str) or not handle.strip():
-        return jsonify({"error": "handle required"}), 400
-    role = data.get("role", "worker")
-    if role is not None and not isinstance(role, str):
-        return jsonify({"error": "role must be string"}), 400
-    purpose = data.get("purpose", "")
-    if purpose is not None and not isinstance(purpose, str):
-        return jsonify({"error": "purpose must be string"}), 400
+    if not isinstance(handle, str) or not _HANDLE_RE.match(handle.strip()):
+        errors.append("handle must be 1-128 chars of letters, digits and ._:@/+- (no '#')")
+    role = _optional_str(data, "role", errors, "worker") or "worker"
+    purpose = _optional_str(data, "purpose", errors)
+    medium = _optional_str(data, "medium", errors).lower()
+    if medium and medium not in RUN_MEDIA:
+        errors.append(f"medium must be one of {RUN_MEDIA}")
+    session_id = _optional_str(data, "session_id", errors)
+    ttl = data.get("run_ttl_seconds", BUS_RUN_TTL_DEFAULT_SECONDS)
+    if not _is_number(ttl) or ttl <= 0:
+        errors.append("run_ttl_seconds must be a number > 0")
+    if errors:
+        return jsonify({"error": "invalid register payload", "details": errors}), 400
+    handle = handle.strip()
+    ttl = float(min(ttl, BUS_RUN_TTL_MAX_SECONDS))
 
     agent_uuid = uuid.uuid4().hex
     now = time.time()
     record = {
         "agent_uuid": agent_uuid,
-        "agent_handle": handle.strip(),
-        "role": role or "worker",
-        "purpose": purpose or "",
+        "agent_handle": handle,
+        "role": role,
+        "purpose": purpose,
         "status": "active",
         "registered_at": now,
         "last_seen_at": now,
         "ephemeral": not _store.durable,
     }
     _store.put_agent(record)
+    run, run_token = _store.runs.create(handle, agent_uuid, ttl, role=role, medium=medium, session_id=session_id)
+    _metric_inc("runs_registered")
     logger.debug(
-        "agent_registered uuid=%s handle=%s role=%s",
-        agent_uuid,
-        record["agent_handle"],
-        record["role"],
+        "agent_registered uuid=%s handle=%s role=%s run_id=%s actor=%s",
+        agent_uuid, handle, role, run["run_id"], run["actor"],
     )
-    return jsonify({"success": True, "agent": record}), 201
+    return jsonify({
+        "success": True,
+        "agent": record,
+        "run": run,
+        "actor": run["actor"],
+        "run_token": run_token,
+    }), 201
+
+
+def _require_run():
+    run = getattr(g, "run", None)
+    if not run:
+        return None, (jsonify({"error": "this endpoint needs a run token as the bearer token"}), 400)
+    return run, None
+
+
+@app.route("/agents/whoami", methods=["GET"])
+def agents_whoami():
+    run = getattr(g, "run", None)
+    return jsonify({
+        "auth": getattr(g, "auth", "none"),
+        "actor": run["actor"] if run else None,
+        "run": run,
+    })
+
+
+@app.route("/agents/heartbeat", methods=["POST"])
+def agents_heartbeat():
+    """Keep a run alive. Any request with the run token also extends it."""
+    run, error = _require_run()
+    if error:
+        return error
+    run = _store.runs.heartbeat(run["run_id"]) or run
+    return jsonify({"success": True, "run": run, "last_seen_at": run["last_seen_at"], "expires_at": run["expires_at"]})
+
+
+@app.route("/agents/runs", methods=["GET"])
+def agents_list_runs():
+    include_ended = _parse_bool(request.args.get("include_ended", "false"))
+    runs = _store.runs.list(active_only=not include_ended)
+    return jsonify({"runs": runs, "count": len(runs)})
+
+
+@app.route("/agents/runs/end", methods=["POST"])
+def agents_end_run():
+    """End a run: its token stops working and its locks are released.
+
+    With a run token, ends the caller's own run. With the shared token,
+    ends the run named by ``run_id`` (operator clean-up).
+    """
+    caller = getattr(g, "run", None)
+    data = request.get_json(silent=True) or {}
+    if caller:
+        run_id = caller["run_id"]
+        if data.get("run_id") not in (None, run_id):
+            return jsonify({"error": "a run can only end itself"}), 403
+    else:
+        run_id = data.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            return jsonify({"error": "run_id required"}), 400
+        run_id = run_id.strip()
+    run = _store.runs.end(run_id)
+    if run is None:
+        return jsonify({"error": "run not found or not active"}), 404
+    released = _store.locks.release_agent(run["actor"])
+    _metric_inc("runs_ended")
+    if released:
+        _metric_inc("locks_released", len(released))
+    return jsonify({"success": True, "run": run, "locks_released": [lock["resource"] for lock in released]})
 
 
 @app.route("/health", methods=["GET"])
@@ -929,6 +1065,8 @@ def health():
         "jobs_active": jobs_active,
         "locks_held": _store.locks.count(),
         "locks_durable": _store.locks.durable,
+        "runs_active": _store.runs.active_count(),
+        "require_run_token": BUS_REQUIRE_RUN_TOKEN,
         "version": BUS_VERSION,
         "git_sha": BUS_GIT_SHA or None,
         "process_rss_bytes": rss,
@@ -957,6 +1095,8 @@ def metrics():
             "locks_renewed": _metrics["locks_renewed"],
             "locks_released": _metrics["locks_released"],
             "locks_expired": _metrics["locks_expired"],
+            "runs_registered": _metrics["runs_registered"],
+            "runs_ended": _metrics["runs_ended"],
         }
         timers = {
             "post_latency_ms_avg": _metric_avg(list(_metrics["post_latency_ms"])),
@@ -973,6 +1113,7 @@ def metrics():
             "jobs_in_memory": jobs_in_memory,
             "leased_messages": leased,
             "locks_held": _store.locks.count(),
+            "runs_active": _store.runs.active_count(),
         },
         "timers": timers,
     })
