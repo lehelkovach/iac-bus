@@ -29,8 +29,8 @@ its own branch and PR to `dev`, stacked on the previous phase.
 | --- | --- | --- | --- |
 | 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review (PR #21) |
 | 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review (PR #22) |
-| 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | In review |
-| 3 | A2A mapping (design only), then pause for review | — | Planned |
+| 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | In review (PR #23) |
+| 3 | A2A mapping (design only), then pause for review | `claude/iac-bus-p3-a2a-mapping-vhy9iw` | **Paused for review**: `docs/A2A_MAPPING.md` |
 | 4 | A2A interop (Agent Card, JSON-RPC, card registration) | — | Waits for approval of Phase 3 |
 
 ### Phase 1 facts
@@ -86,6 +86,14 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Not done (Track B): principals, grants, runs minting child runs, signatures.
 - Gates: `pytest -q` green, `scripts/bus_smoke.sh` 18/18, demo exits 0 and
   shows a refused spoof.
+
+### Phase 3 facts
+
+- `docs/A2A_MAPPING.md` maps A2A 1.0 (released 2026-03-12; wire version
+  "1.0") onto the bus: Agent Card, JSON-RPC methods, task states both ways,
+  auth, and what A2A lacks (locks, leases, hierarchy, authority, registry).
+- The card path is `/.well-known/agent-card.json`, not `agent.json`.
+- Phase 4 needs decisions A–G in §7 of that doc before any A2A code.
 
 ## Dogfood evidence (local + nested)
 
