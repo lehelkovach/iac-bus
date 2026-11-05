@@ -27,8 +27,8 @@ its own branch and PR to `dev`, stacked on the previous phase.
 
 | Phase | Scope | Branch | Status |
 | --- | --- | --- | --- |
-| 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review |
-| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | — | Next |
+| 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review (PR #21) |
+| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review |
 | 2b | Per-run tokens; the bus derives the caller from its token | — | Planned |
 | 3 | A2A mapping (design only), then pause for review | — | Planned |
 | 4 | A2A interop (Agent Card, JSON-RPC, card registration) | — | Waits for approval of Phase 3 |
@@ -48,6 +48,25 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Known gap: `resource_locks.resource_key UNIQUE` in
   `docs/sql/ACP_V2_SCHEMA.sql` cannot hold several shared holders (TODO in
   the schema and `locks.py`).
+
+### Phase 2 facts
+
+- `mcp_server.py`: stdio MCP server (official SDK, `mcp>=2.3,<3`), a thin
+  client over the HTTP API. Config: `BUS_URL`, `BUS_API_TOKEN`,
+  `BUS_AGENT_ID`, plus `BUS_REPO`, `BUS_REPO_ROOT`, `BUS_AGENT_SUFFIX`.
+- 13 tools: the 11 planned plus `check_lock` (fencing check before commit)
+  and `check_decision` (poll an earlier `request_decision`). Descriptions and
+  server instructions tell agents to lock before editing and release after.
+- Each process appends a random suffix to `BUS_AGENT_ID`, so two sessions
+  sharing a committed `.mcp.json` cannot share an identity.
+- The lock scope defaults to the origin remote's repo name, so worktrees and
+  clones of one repo see each other's locks.
+- `scripts/demo_two_agents.sh` drives two real adapter processes over MCP
+  stdio through a lock hand-over. `docs/MCP_SETUP.md` covers Claude Code.
+- `requirements-mcp.txt` is installed by CI only; the dev VM's
+  `requirements-dev.txt` is unchanged (the SDK needs Python 3.10+).
+- Gates: `pytest -q` green with the SDK and without it (2 MCP-surface tests
+  skip), `scripts/bus_smoke.sh` 15/15, demo exits 0.
 
 ## Dogfood evidence (local + nested)
 

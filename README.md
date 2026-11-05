@@ -14,6 +14,49 @@ Lightweight message bus for coordinating multiple agents over HTTP.
 > exists, use the IP and port directly, and treat any doc that prints the
 > hostname as aspirational.
 
+## Coordinating coding agents
+
+Several coding agents (Claude Code sessions, Cursor agents, any MCP client) can
+work in one repo through the bus without overwriting each other.
+
+1. Run the bus: `BUS_API_TOKEN=... python server.py`, or use the shared host.
+2. Give every agent session the MCP adapter, `mcp_server.py`, with its own
+   `BUS_AGENT_ID`. [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md) shows how to register
+   it in Claude Code for two sessions.
+3. The agents get these tools:
+
+   | Tool | Use |
+   | --- | --- |
+   | `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
+   | `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
+   | `list_locks` | who is editing what |
+   | `claim_work` / `ack_work` / `nack_work` | take queued tasks under a lease |
+   | `post_message` / `read_messages` | talk to other agents and humans |
+   | `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
+   | `report_status` | publish state and a one-line summary |
+
+See it work, with a throwaway bus and two real MCP server processes:
+
+```bash
+pip install -r requirements.txt -r requirements-mcp.txt
+bash scripts/demo_two_agents.sh
+```
+
+```
+[A] acquire_lock("src/app.py", reason="refactor login flow", ttl_seconds=120)
+[A]   -> acquired. fencing_token=1793669595760, expires in 120s
+[B] acquire_lock("src/app.py")
+[B]   -> refused (HTTP 409): held by agent-a#2ef0f0 (exclusive, "refactor login flow"), expires in 120s
+[B] acquire_lock("src/app.py", wait_seconds=15)   ... blocking until the path frees up
+[A] release_lock("src/app.py") -> released ['src/app.py']
+[B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
+```
+
+Locks reduce collisions between agents. Git branches, CI and review stay the
+source of truth for code. Identity is currently the name each agent sends, so
+treat the bus as cooperative; per-run tokens are the next step
+(`docs/IDENTITY-AND-AUTHORITY.md`).
+
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
