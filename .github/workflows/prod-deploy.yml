@@ -1,10 +1,10 @@
 name: prod-deploy
 
+# Manual-only (2026-11-05): the Actions budget is spent, so every automatic
+# run ended in startup_failure and emailed the owner. Tests run locally
+# before a merge; run this by hand from the Actions tab when needed.
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    tags: ["v*"]
 
 jobs:
   test:
