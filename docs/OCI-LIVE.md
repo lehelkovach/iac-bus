@@ -23,11 +23,11 @@ the production bus above stays untouched.
 | Field | Value |
 | --- | --- |
 | Instance | `iac-bus-coord-dev` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
-| Public / private IP | `129.146.71.98` / `10.0.1.87` |
-| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `eebde41`, `/opt/iac-bus`, `iac-bus.service` |
-| Bus | `http://129.146.71.98:8101`, token required (`/health` open) |
+| Public / private IP | `129.146.71.34` / `10.0.1.140` (relaunched 2026-11-03 03:13 UTC with Phase 4) |
+| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `aeb329a` (locks, MCP, run tokens, A2A), `/opt/iac-bus`, `iac-bus.service` |
+| Bus | `http://129.146.71.34:8101`, token required (`/health` and `/.well-known/agent-card.json` open) |
 | Deployed by | OCI API only: `scripts/oci_launch_bus_vm.py` (cloud-init clones, installs, opens iptables, starts systemd) |
-| Tags | `created-by=claude-code-session`, `branch=...`, `git-sha=eebde411bb70` |
+| Tags | `created-by=oci_launch_bus_vm.py`, `branch=claude/iac-bus-coordination-phases-vhy9iw` |
 
 Facts found while deploying:
 
@@ -45,6 +45,34 @@ Facts found while deploying:
   `<ip-with-dashes>.sslip.io`, bus bound to localhost), which needs ingress on
   80 and 443 for this VM (an NSG passed with `--nsg-id`). Opening those ports is
   an owner decision; the script never changes network rules.
+
+### Turning on HTTPS for the coordination VM
+
+Cloud agents need HTTPS before they can send a bearer token to the bus. The
+launch script does the VM side (Caddy, a Let's Encrypt certificate for
+`<ip-with-dashes>.sslip.io`, bus bound to localhost, `BUS_PUBLIC_URL` for the
+A2A card). Inbound 80 and 443 must be allowed first; this is an owner step
+because it opens ports to the internet:
+
+```bash
+# 1. A network security group in waydroid-vcn that allows only 80 and 443 (attach it to the bus VM only)
+oci network nsg create --compartment-id <compartment-ocid> --vcn-id <waydroid-vcn-ocid> \\
+  --display-name iac-bus-coord-dev-https
+oci network nsg rules add --nsg-id <nsg-ocid> --security-rules '[
+  {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK",
+   "tcpOptions":{"destinationPortRange":{"min":80,"max":80}}},
+  {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK",
+   "tcpOptions":{"destinationPortRange":{"min":443,"max":443}}}]'
+
+# 2. A fresh VM with HTTPS, then retire the plain-HTTP one
+python scripts/oci_launch_bus_vm.py --branch claude/iac-bus-coordination-phases-vhy9iw \\
+  --name iac-bus-coord-dev-https --https --nsg-id <nsg-ocid>
+# prints BUS_URL=https://<ip-with-dashes>.sslip.io; the token is in .oci-vm/iac-bus-coord-dev-https/bus_token
+
+# 3. Real Claude Code sessions against it
+BUS_URL=https://<ip-with-dashes>.sslip.io BUS_API_TOKEN="$(cat .oci-vm/iac-bus-coord-dev-https/bus_token)" \\
+  python scripts/claude_agents_trial.py --out docs/CLAUDE_TRIAL_OCI.md
+```
 
 ## DNS cutover checklist
 

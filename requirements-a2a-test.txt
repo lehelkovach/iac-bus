@@ -1,0 +1,4 @@
+# Test-only: the official A2A SDK, used to check that the bus's A2A wire JSON
+# parses as the spec's protobuf types (tests/test_a2a.py). The bus server and
+# the bridge do not need it.
+a2a-sdk>=1.3,<2

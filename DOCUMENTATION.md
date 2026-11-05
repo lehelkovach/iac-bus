@@ -267,6 +267,65 @@ Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
 `bash scripts/demo_two_agents.sh`. Dependencies: `requirements-mcp.txt`
 (Python 3.10+; not needed by the bus server).
 
+### A2A interop
+
+A2A 1.0, JSON-RPC binding. Design: `docs/A2A_MAPPING.md`. Walkthrough:
+`docs/A2A_DEMO.md`.
+
+#### GET /.well-known/agent-card.json
+The bus's Agent Card. Public (no token), `Cache-Control: public, max-age=300`.
+Its interface URL is `BUS_PUBLIC_URL` + `/a2a` (or the request's own URL).
+Security scheme `runToken`: HTTP Bearer with an iac-bus run token.
+
+#### POST /a2a
+JSON-RPC 2.0 with `A2A-Version: 1.0` (header or query parameter). A missing or
+other version gets `VersionNotSupportedError` (-32009). Run tokens only: no
+token is `401`, the shared token is `403`.
+
+| Method | Behaviour |
+| --- | --- |
+| `SendMessage` | New task: `metadata.skill` `enqueue-work` (default) or `run-job`, `metadata.queue` (default `a2a-inbound`, or the agent's first granted queue), optional `metadata.lockPaths`. With `taskId`: answers the task's open question (posted as `provide_decision`), or passes a note to the worker on `a2a.task.<id>`. Blocks up to `BUS_WAIT_SECONDS_MAX` unless `configuration.returnImmediately` |
+| `GetTask` | The caller's task; `historyLength` trims history |
+| `ListTasks` | The caller's tasks, newest status first: `contextId`, `status`, `statusTimestampAfter`, `pageSize` (1-100), `pageToken`, `historyLength` (default 0), `includeArtifacts` |
+| `CancelTask` | Withdraws an unclaimed item or skips the job step, posts `cancel_task` for a worker; `TaskNotCancelable` (-32002) when already terminal |
+
+Other A2A methods return `UnsupportedOperation` (-32004),
+`PushNotificationNotSupported` (-32003) or `ExtendedAgentCardNotConfigured`
+(-32007). A grant refusal is -32000 with reason `PERMISSION_DENIED`.
+
+State mapping: queue item pending or step pending is `SUBMITTED`; leased or
+running is `WORKING`; an open `request_decision` tied to the work item is
+`INPUT_REQUIRED`; ack is `COMPLETED` (the ack `result` becomes an artifact);
+nack without requeue, step failed or timed out is `FAILED`; `CancelTask` is
+`CANCELED`.
+
+#### POST /agents/a2a/register
+Shared token only. `{"card_url" | "card", "handle"?, "grants"?, "credential_env"?, "run_ttl_seconds"?}`.
+`card_url` is fetched with a guard: https only, public addresses only, no
+redirects, 256 KB max, unless the host is in `BUS_A2A_ALLOW_HOSTS`.
+`grants` are deny-by-default allowlists (`skills`, `queues`, `channels`,
+`lock_paths`; fnmatch patterns). `credential_env` is the NAME of the env var
+on the bridge host that holds the token for calling the agent. Returns the
+agent (card summary, grants, `outbound_queue` = `a2a.<handle>`), its run and
+`run_token` (once). Registering the same handle again updates it (`200`).
+
+#### GET /agents/a2a
+Registered A2A agents with card summary, grants, `credential_env` name and
+`outbound_queue`. Not for restricted runs.
+
+#### Grants on any run
+`POST /agents/register` also accepts `grants`. A restricted run may only post
+to and read granted channels (and must name one), claim, ack and nack granted
+queues, and lock under granted paths. It cannot post `orchestration.*`
+messages or list runs or A2A agents.
+
+#### Outbound bridge (`scripts/a2a_bridge.py`)
+Claims items from every registered agent's `outbound_queue`, locks the item's
+`lock_paths`, sends `SendMessage` to the agent's JSON-RPC endpoint (token from
+`credential_env`), relays `INPUT_REQUIRED` / `AUTH_REQUIRED` as a bus
+`request_decision`, then acks with the artifacts, or nacks with the reason. It
+posts `report_result` on `a2a.<handle>`. Run one bridge per bus.
+
 ### POST /agents/register
 Registers an agent and starts a run for it. Needs the shared token (or an
 open bus); a run token gets `403`.
@@ -316,6 +375,10 @@ locks are released (`lock.released` events). Returns `locks_released`.
 | `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use when `run_ttl_seconds` is omitted |
 | `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
 | `BUS_REQUIRE_RUN_TOKEN` | off | When on, `/bus/*` refuses the shared token; agents must use run tokens |
+| `BUS_PUBLIC_URL` | request URL | Base URL in the A2A Agent Card |
+| `BUS_A2A_NAME` | `iac-bus` | Agent Card name |
+| `BUS_A2A_ORG` | empty | Agent Card provider organization |
+| `BUS_A2A_ALLOW_HOSTS` | empty | Comma list of hosts allowed for http or private-address card URLs |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 | `BUS_VERSION` | `0.1.0` | Version string in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |

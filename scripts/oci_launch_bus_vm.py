@@ -80,8 +80,6 @@ apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnu
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
 apt-get update -y && apt-get install -y caddy
-PUBLIC_IP=$(curl -fsS -m 10 https://api.ipify.org || curl -fsS -m 10 https://ifconfig.me)
-HOST="$(echo "$PUBLIC_IP" | tr . -).sslip.io"
 cat > /etc/caddy/Caddyfile <<CADDY
 $HOST {
     reverse_proxy 127.0.0.1:__PORT__
@@ -95,6 +93,11 @@ for i in $(seq 1 60); do curl -fsS "https://$HOST/health" >/dev/null && break; s
 say "https https://$HOST $(curl -sS -m 5 https://$HOST/health || echo NOT-YET)"
 """.replace("__PORT__", str(port))
     open_port = "" if https else f"iptables -I INPUT 1 -p tcp --dport {port} -j ACCEPT\nnetfilter-persistent save\n"
+    # With --https the public URL (for the A2A Agent Card) is known before the env file is written.
+    discover = ("PUBLIC_IP=$(curl -fsS -m 10 https://api.ipify.org || curl -fsS -m 10 https://ifconfig.me)\n"
+                'HOST="$(echo "$PUBLIC_IP" | tr . -).sslip.io"\n'
+                'PUBLIC_URL="https://$HOST"\n') if https else 'PUBLIC_URL=""\n'
+
     return f"""#!/bin/bash
 set -euxo pipefail
 exec > >(tee /var/log/iac-bus-bootstrap.log) 2>&1
@@ -107,7 +110,7 @@ APP=/opt/iac-bus
 git clone --branch {branch} --depth 1 {REPO_URL} $APP
 SHA=$(git -C $APP rev-parse HEAD)
 say "git $SHA"
-python3 -m venv $APP/venv
+{discover}python3 -m venv $APP/venv
 $APP/venv/bin/pip install --upgrade pip
 $APP/venv/bin/pip install -r $APP/requirements.txt
 mkdir -p /etc/iac-bus
@@ -122,6 +125,7 @@ BUS_QUEUE_LEASE_SECONDS=60
 BUS_VERSION=$(cat $APP/VERSION)
 BUS_GIT_SHA=$SHA
 BUS_API_TOKEN={token}
+BUS_PUBLIC_URL=$PUBLIC_URL
 ENVFILE
 umask 022
 install -m 0644 $APP/systemd/iac-bus.service /etc/systemd/system/iac-bus.service

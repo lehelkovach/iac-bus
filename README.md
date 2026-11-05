@@ -62,6 +62,31 @@ derives every agent's identity from its run token and one agent cannot release
 another's locks. Set `BUS_REQUIRE_RUN_TOKEN=1` to stop shared-token callers
 from naming themselves on `/bus/*`.
 
+## A2A interop
+
+The bus speaks [A2A 1.0](https://a2a-protocol.org) in both directions, so any
+A2A agent can join supervised work.
+
+- **Discovery.** `GET /.well-known/agent-card.json` is the bus's public Agent
+  Card. It offers two skills: `enqueue-work` (a task becomes a work item our
+  coding agents claim) and `run-job` (a one-step orchestration job).
+- **Incoming tasks.** `POST /a2a` (JSON-RPC, `A2A-Version: 1.0`) implements
+  `SendMessage`, `GetTask`, `ListTasks` and `CancelTask`. Task state follows
+  the work on the bus. A worker's `request_decision` shows up as
+  `TASK_STATE_INPUT_REQUIRED`, and the caller's reply goes back as the
+  decision. The worker's ack `result` becomes the task's artifact.
+- **Registering an agent.** `POST /agents/a2a/register` stores an agent's
+  card (fetched over https, or inline), grants it deny-by-default allowlists
+  of skills, queues, channels and lock paths, and mints its run token. `/a2a`
+  never accepts the shared token.
+- **Outgoing work.** `scripts/a2a_bridge.py` delivers work queued for a
+  registered agent: it locks the declared paths, sends the task, relays the
+  agent's questions as bus decisions, and acks with the agent's artifacts.
+
+Walkthrough with real output: [`docs/A2A_DEMO.md`](docs/A2A_DEMO.md) (or run
+`bash scripts/a2a_curl_demo.sh`). Design and decisions:
+[`docs/A2A_MAPPING.md`](docs/A2A_MAPPING.md).
+
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
@@ -199,6 +224,9 @@ through the configured store; runs are in memory.
 | `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use |
 | `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
 | `BUS_REQUIRE_RUN_TOKEN` | off | Require run tokens on `/bus/*` |
+| `BUS_PUBLIC_URL` | request URL | Base URL advertised in the A2A Agent Card |
+| `BUS_A2A_NAME` / `BUS_A2A_ORG` | `iac-bus` / empty | Agent Card name and provider |
+| `BUS_A2A_ALLOW_HOSTS` | empty | Hosts allowed for http or private-address card URLs (development) |
 | `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
 | `BUS_VERSION` | `0.1.0` | Reported in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |

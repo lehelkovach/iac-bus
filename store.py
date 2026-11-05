@@ -34,6 +34,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from locks import MemoryLockTable
+from a2a_interop import MemoryA2ATaskTable
 from runs import MemoryRunTable
 
 STATUS_PUBLISHED = "published"
@@ -79,6 +80,7 @@ class MemoryStore:
         # Path locks (locks.py) and runs (runs.py). In memory in both backends.
         self.locks = MemoryLockTable()
         self.runs = MemoryRunTable()
+        self.a2a_tasks = MemoryA2ATaskTable()
 
     def close(self) -> None:
         return None
@@ -159,6 +161,25 @@ class MemoryStore:
                 self.messages.pop(idx)
                 return message, None
         return None, "not found"
+
+    def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            for message in self.messages:
+                if message.get("id") == message_id:
+                    return dict(message)
+        return None
+
+    def delete_message(self, message_id: str, only_pending: bool = True) -> bool:
+        """Remove a message (used to withdraw a queued item nobody has claimed)."""
+        with self._lock:
+            for idx, message in enumerate(self.messages):
+                if message.get("id") != message_id:
+                    continue
+                if only_pending and message.get("status") != STATUS_PENDING:
+                    return False
+                self.messages.pop(idx)
+                return True
+        return False
 
     def message_count(self) -> int:
         with self._lock:
@@ -246,6 +267,7 @@ class SqliteStore:
         # (runs.py) are in memory too; clients register again after a restart.
         self.locks = MemoryLockTable()
         self.runs = MemoryRunTable()
+        self.a2a_tasks = MemoryA2ATaskTable()
         # check_same_thread=False: Flask serves requests on worker threads;
         # every access is serialised by self._lock.
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -404,6 +426,20 @@ class SqliteStore:
             self._conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
             self._conn.commit()
             return message, None
+
+    def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._fetch(message_id)
+        return self._row_to_message(row) if row else None
+
+    def delete_message(self, message_id: str, only_pending: bool = True) -> bool:
+        with self._lock:
+            if only_pending:
+                cur = self._conn.execute("DELETE FROM messages WHERE id=? AND status=?", (message_id, STATUS_PENDING))
+            else:
+                cur = self._conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def message_count(self) -> int:
         with self._lock:
