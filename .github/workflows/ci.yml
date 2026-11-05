@@ -3,14 +3,11 @@ name: ci
 # Runs the test suite on every pull request and on pushes to feature
 # branches, so a PR is red before it reaches dev. Pushes to `dev` and
 # `master` are covered by dev-deploy.yml / prod-deploy.yml.
+# Manual-only (2026-11-05): the Actions budget is spent, so every automatic
+# run ended in startup_failure and emailed the owner. Tests run locally
+# before a merge; run this by hand from the Actions tab when needed.
 on:
-  pull_request:
-  push:
-    branches:
-      - "claude/**"
-      - "cursor/**"
-      - "feat/**"
-      - "fix/**"
+  workflow_dispatch:
 
 jobs:
   test:
