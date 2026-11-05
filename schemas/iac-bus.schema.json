@@ -3,7 +3,7 @@
   "$id": "https://iac-bus.local/schemas/iac-bus.schema.json",
   "title": "IAC Bus Protocol",
   "type": "object",
-  "description": "Schema definitions for IAC Bus message and queue endpoints.",
+  "description": "Schema definitions for IAC Bus message, queue and lock endpoints.",
   "$defs": {
     "MessageCreate": {
       "type": "object",
@@ -399,6 +399,400 @@
         }
       },
       "additionalProperties": false
+    },
+    "LockAcquireRequest": {
+      "type": "object",
+      "required": [
+        "resource",
+        "agent"
+      ],
+      "properties": {
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repo-relative path. A lock on a folder covers everything below it; '.' is the repo root. Absolute paths, '..' escapes and glob characters are rejected."
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "default": "default",
+          "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$",
+          "description": "Lock scope. The same path in two repos never conflicts."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "shared"
+          ],
+          "default": "exclusive"
+        },
+        "ttl_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 300,
+          "description": "Capped at BUS_LOCK_TTL_MAX_SECONDS (default 3600)."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Block up to this long (capped at BUS_WAIT_SECONDS_MAX) for conflicting locks to clear."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Lock": {
+      "type": "object",
+      "description": "A lock as anyone may see it. Never contains lock_id.",
+      "required": [
+        "repo",
+        "resource",
+        "mode",
+        "agent",
+        "reason",
+        "fencing_token",
+        "acquired_at",
+        "expires_at",
+        "ttl_seconds"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "shared"
+          ]
+        },
+        "agent": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "fencing_token": {
+          "type": "integer"
+        },
+        "acquired_at": {
+          "type": "number",
+          "description": "Unix seconds"
+        },
+        "renewed_at": {
+          "type": "number",
+          "description": "Unix seconds"
+        },
+        "expires_at": {
+          "type": "number",
+          "description": "Unix seconds"
+        },
+        "ttl_seconds": {
+          "type": "number"
+        },
+        "released_at": {
+          "type": "number",
+          "description": "Unix seconds; release events only"
+        }
+      },
+      "not": {
+        "required": [
+          "lock_id"
+        ]
+      }
+    },
+    "LockAcquireResponse": {
+      "description": "200 from POST /bus/locks/acquire. The only place a lock_id is returned.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/LockWithId"
+        }
+      ],
+      "properties": {
+        "waited_seconds": {
+          "type": "number"
+        }
+      }
+    },
+    "LockWithId": {
+      "type": "object",
+      "description": "A lock as its holder sees it, including the lock_id capability.",
+      "required": [
+        "lock_id",
+        "repo",
+        "resource",
+        "mode",
+        "agent",
+        "fencing_token",
+        "expires_at"
+      ],
+      "properties": {
+        "lock_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "shared"
+          ]
+        },
+        "agent": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "fencing_token": {
+          "type": "integer"
+        },
+        "acquired_at": {
+          "type": "number"
+        },
+        "renewed_at": {
+          "type": "number"
+        },
+        "expires_at": {
+          "type": "number"
+        },
+        "ttl_seconds": {
+          "type": "number"
+        }
+      }
+    },
+    "LockConflict": {
+      "type": "object",
+      "description": "409 from POST /bus/locks/acquire. Top-level holder fields describe the oldest conflicting lock.",
+      "required": [
+        "error",
+        "held_by",
+        "mode",
+        "reason",
+        "expires_at",
+        "conflicts"
+      ],
+      "properties": {
+        "error": {
+          "const": "lock conflict"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "requested_mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "shared"
+          ]
+        },
+        "held_by": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "shared"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "number"
+        },
+        "conflicting_resource": {
+          "type": "string"
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Lock"
+          }
+        },
+        "waited_seconds": {
+          "type": "number"
+        }
+      },
+      "not": {
+        "required": [
+          "lock_id"
+        ]
+      }
+    },
+    "LockRenewRequest": {
+      "type": "object",
+      "required": [
+        "lock_id",
+        "agent"
+      ],
+      "properties": {
+        "lock_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttl_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 300
+        }
+      },
+      "additionalProperties": false
+    },
+    "LockReleaseRequest": {
+      "type": "object",
+      "required": [
+        "lock_id",
+        "agent"
+      ],
+      "properties": {
+        "lock_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "LockValidateRequest": {
+      "type": "object",
+      "description": "POST /bus/locks/validate: 200 when fencing_token is a live lock covering resource, else 409.",
+      "required": [
+        "resource",
+        "fencing_token"
+      ],
+      "properties": {
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repo-relative path. A lock on a folder covers everything below it; '.' is the repo root. Absolute paths, '..' escapes and glob characters are rejected."
+        },
+        "fencing_token": {
+          "type": "integer"
+        },
+        "repo": {
+          "type": "string",
+          "default": "default",
+          "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$",
+          "description": "Lock scope. The same path in two repos never conflicts."
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "LockValidateResponse": {
+      "type": "object",
+      "required": [
+        "valid",
+        "reason",
+        "fencing_token"
+      ],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "fencing_token": {
+          "type": "integer"
+        },
+        "lock": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Lock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "LockList": {
+      "type": "object",
+      "description": "GET /bus/locks?resource_prefix=&repo=&agent=. resource_prefix returns every lock overlapping that path, including parent-folder locks.",
+      "required": [
+        "locks",
+        "count"
+      ],
+      "properties": {
+        "locks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Lock"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "LockEvent": {
+      "type": "object",
+      "description": "Message the bus posts to channel 'locks' with sender 'iac-bus'.",
+      "required": [
+        "channel",
+        "sender",
+        "type",
+        "message"
+      ],
+      "properties": {
+        "channel": {
+          "const": "locks"
+        },
+        "sender": {
+          "const": "iac-bus"
+        },
+        "type": {
+          "enum": [
+            "lock.acquired",
+            "lock.released",
+            "lock.expired"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/Lock"
+        }
+      }
     }
   }
 }

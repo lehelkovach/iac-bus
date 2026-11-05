@@ -124,7 +124,8 @@ Returns health plus ops gauges. Does not require authentication.
 Always includes `status=ok` when the process is serving.
 
 Fields include: `uptime_seconds`, `messages_retained`, `queue_pending_count`,
-`queue_leased_count`, `jobs_active`, `version`, `git_sha`, `process_rss_bytes`.
+`queue_leased_count`, `jobs_active`, `locks_held`, `locks_durable`, `version`,
+`git_sha`, `process_rss_bytes`.
 
 Example:
 ```bash
@@ -135,8 +136,10 @@ curl "http://127.0.0.1:8091/health"
 JSON metrics for tuning and live debug. Does not require authentication.
 
 - counters: `messages_posted`, `messages_polled`, `queue_claims`, `queue_acks`,
-  `queue_nacks`, `orchestration_jobs`, `orchestration_dispatches`
-- gauges: `messages_in_memory`, `jobs_in_memory`, `leased_messages`
+  `queue_nacks`, `orchestration_jobs`, `orchestration_dispatches`,
+  `locks_acquired`, `lock_conflicts`, `locks_renewed`, `locks_released`,
+  `locks_expired`
+- gauges: `messages_in_memory`, `jobs_in_memory`, `leased_messages`, `locks_held`
 - timers: rolling averages `post_latency_ms_avg`, `poll_latency_ms_avg`,
   `claim_latency_ms_avg`
 
@@ -144,6 +147,74 @@ Example:
 ```bash
 curl "http://127.0.0.1:8091/metrics"
 ```
+
+### Path locks
+
+Agents lock a repo path before editing it and release it afterwards. Rules:
+
+- `resource` is a repo-relative path. `./src/auth/` and `src/auth` are the same
+  resource. `.` is the repo root. Absolute paths, `..` escapes and glob
+  characters are rejected with `400`.
+- Overlap is by whole path segment: a lock on `src/auth` conflicts with
+  `src/auth/login.py` but not with `src/authz.py`.
+- `repo` scopes a lock (default `default`). The same path in two repos never
+  conflicts.
+- `exclusive` (default) conflicts with every overlapping lock held by another
+  agent. `shared` conflicts only with an overlapping `exclusive` lock.
+- Locks held by the same `agent` never conflict with each other.
+- Every acquire gets a new `fencing_token`, strictly greater than any issued
+  before (seeded from the clock in ms, so it keeps rising across restarts).
+- A lock expires at `expires_at` (Unix seconds) unless renewed. Only the
+  holder, identified by `agent` plus the `lock_id`, can renew or release it.
+- `lock_id` is returned only by acquire. Listings, conflicts and events leave
+  it out, so nobody else can release your lock.
+- Lock events go to channel `locks` as `lock.acquired`, `lock.released` and
+  `lock.expired`, sent by `iac-bus`.
+- Locks are in memory in both store backends; a restart drops them
+  (`/health` reports `locks_durable: false`).
+
+#### POST /bus/locks/acquire
+Request: `{"resource", "agent", "repo"?, "mode"?: "exclusive"|"shared",
+"ttl_seconds"? (default 300, capped at 3600), "reason"?, "wait_seconds"?}`.
+
+- `200` `{"lock_id", "fencing_token", "expires_at", "repo", "resource", "mode",
+  "agent", "reason", "acquired_at", "ttl_seconds", "waited_seconds"}`
+- `409` `{"error": "lock conflict", "held_by", "mode", "reason", "expires_at",
+  "conflicting_resource", "conflicts": [...], "waited_seconds"}`
+- `400` invalid request
+
+With `wait_seconds > 0` (capped by `BUS_WAIT_SECONDS_MAX`) the call blocks until
+the conflicting locks are released or expire, then acquires. Waiters are not
+queued in order; the first to retry after a release wins.
+
+```bash
+curl -X POST http://127.0.0.1:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo":"iac-bus","resource":"src/app.py","agent":"agent-a","ttl_seconds":600,"reason":"refactor auth"}'
+```
+
+#### POST /bus/locks/renew
+`{"lock_id", "agent", "ttl_seconds"?}` returns `200` with the lock and its new
+`expires_at` (same fencing token). `404` when the lock is gone or expired,
+`409` when `agent` is not the holder. An expired lock cannot be renewed;
+acquire again to get a new token.
+
+#### POST /bus/locks/release
+`{"lock_id", "agent"}` returns `200 {"success": true, "lock": {...}}`. `404`
+when gone, `409` when `agent` is not the holder.
+
+#### POST /bus/locks/validate
+The write-boundary check for fencing tokens. `{"resource", "fencing_token",
+"repo"?, "agent"?}` returns `200 {"valid": true, ...}` when the token belongs to
+a live lock that covers `resource` (and is held by `agent`, if given), else
+`409 {"valid": false, "reason"}`. Call it right before committing or writing so
+an agent whose lock expired and was taken over is stopped. Writes should hold
+an `exclusive` lock; the response includes the lock's `mode`.
+
+#### GET /bus/locks
+`?resource_prefix=&repo=&agent=` returns `{"locks": [...], "count"}`.
+`resource_prefix` returns every lock overlapping that path, including locks on
+its parent folders.
 
 ### POST /agents/register
 Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
@@ -158,7 +229,9 @@ Ephemeral agent registration stub (ACP Stage 3 hook). Returns an in-memory
 | `BUS_API_TOKEN` | empty | Bearer token |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
-| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for long-poll `wait_seconds` |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for long-poll and lock `wait_seconds` |
+| `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
+| `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
 | `BUS_VERSION` | `0.1.0` | Version string in `/health` |
 | `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |
@@ -358,12 +431,16 @@ python3 -m venv venv
 - By default messages are stored only in memory; restarts clear all data.
   Set `IAC_BUS_STORE=sqlite` (and `IAC_BUS_DB`) to persist messages, queue
   leases and agent registrations across restarts. Orchestration job state
-  is in-memory in both modes.
+  and path locks are in-memory in both modes.
 - If you run multiple processes (for example, gunicorn with multiple workers)
   with the default memory store, each process maintains its own message
   list. With the SQLite store, workers share the database file, but the
   long-poll wake-up is per process (a waiting poll re-checks every 250 ms).
-- There is no fine-grained access control.
+- There is no fine-grained access control. Lock ownership is checked against
+  the `agent` name the caller sends, which any holder of the shared token can
+  claim; per-run tokens are the planned fix (`docs/IDENTITY-AND-AUTHORITY.md`).
+- Path locks are per process. Run a single process (the default
+  `python server.py`) when agents rely on locks.
 
 ## Roadmap
 All items below are **Planned** unless explicitly marked otherwise.

@@ -13,6 +13,15 @@ from collections import deque
 
 from flask import Flask, g, jsonify, request
 
+from locks import (
+    EVENT_EXPIRED,
+    ERR_NOT_FOUND,
+    MODE_EXCLUSIVE,
+    MODES,
+    normalize_repo,
+    normalize_resource,
+    public_view,
+)
 from orchestration import (
     JobSpec,
     StepStatus,
@@ -49,6 +58,10 @@ BUS_MAX_MESSAGES = int(os.environ.get("BUS_MAX_MESSAGES", "500"))
 BUS_RETENTION_SECONDS = int(os.environ.get("BUS_RETENTION_SECONDS", "3600"))
 BUS_QUEUE_LEASE_SECONDS = int(os.environ.get("BUS_QUEUE_LEASE_SECONDS", "60"))
 BUS_WAIT_SECONDS_MAX = int(os.environ.get("BUS_WAIT_SECONDS_MAX", "30"))
+BUS_LOCK_TTL_DEFAULT_SECONDS = float(os.environ.get("BUS_LOCK_TTL_DEFAULT_SECONDS", "300"))
+BUS_LOCK_TTL_MAX_SECONDS = float(os.environ.get("BUS_LOCK_TTL_MAX_SECONDS", "3600"))
+LOCK_EVENTS_CHANNEL = "locks"
+LOCK_REASON_MAX_CHARS = 500
 BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0")
 BUS_GIT_SHA = os.environ.get("BUS_GIT_SHA", os.environ.get("GITHUB_SHA", ""))
 # Storage backend: "memory" (default, state lost on restart) or "sqlite"
@@ -83,6 +96,11 @@ _metrics = {
     "queue_nacks": 0,
     "orchestration_jobs": 0,
     "orchestration_dispatches": 0,
+    "locks_acquired": 0,
+    "lock_conflicts": 0,
+    "locks_renewed": 0,
+    "locks_released": 0,
+    "locks_expired": 0,
     "post_latency_ms": deque(maxlen=_LATENCY_WINDOW),
     "poll_latency_ms": deque(maxlen=_LATENCY_WINDOW),
     "claim_latency_ms": deque(maxlen=_LATENCY_WINDOW),
@@ -122,6 +140,20 @@ def _request_logging(response):
         duration_ms,
     )
     return response
+
+
+def _actor_from_request(claimed):
+    """Who is calling. Every handler learns the caller's identity here.
+
+    Today this is the name the caller sends (``sender``, ``worker`` or
+    ``agent``), trusted as-is under the shared API token. When per-run tokens
+    land, this returns the identity bound to the caller's token instead and
+    no handler has to change.
+    """
+    if not isinstance(claimed, str):
+        return None
+    claimed = claimed.strip()
+    return claimed or None
 
 
 def _parse_bool(value):
@@ -376,7 +408,28 @@ def _bus_add_message(payload):
     return msg
 
 
+def _publish_lock_event(kind, lock):
+    """Post a lock lifecycle event to the ``locks`` channel (no lock ids)."""
+    if kind == EVENT_EXPIRED:
+        _metric_inc("locks_expired")
+    _bus_add_message({
+        "protocol": "iac-bus/1.1",
+        "channel": LOCK_EVENTS_CHANNEL,
+        "sender": "iac-bus",
+        "message": lock,
+        "type": f"lock.{kind}",
+        "queue": "",
+        "priority": 0,
+    })
+
+
+_store.locks.on_event = _publish_lock_event
+
+
 def _filter_messages(channel, since_id, limit, include_queue):
+    # Expire stale locks first so readers of the `locks` channel see
+    # lock.expired events without anyone touching the lock endpoints.
+    _store.locks.sweep()
     _bus_prune()
     return _store.list_messages(channel, since_id, include_queue, limit)
 
@@ -421,6 +474,9 @@ def bus_post_message():
     payload, errors = _normalize_message_payload(data)
     if errors:
         return jsonify({"error": "invalid message", "details": errors}), 400
+    actor = _actor_from_request(payload["sender"])
+    if actor is not None:
+        payload["sender"] = actor
     orch_action, orch_error = _prepare_orchestration_action(payload)
     if orch_error:
         error_msg, status_code = orch_error
@@ -514,7 +570,7 @@ def bus_claim_queue_message():
     started = time.time()
     data = request.get_json() or {}
     queue = data.get("queue", "")
-    worker = data.get("worker", "")
+    worker = _actor_from_request(data.get("worker")) or ""
     lease_seconds = data.get("lease_seconds")
     if not isinstance(queue, str) or not queue.strip():
         return jsonify({"error": "queue required"}), 400
@@ -538,7 +594,7 @@ def bus_ack_queue_message():
     data = request.get_json() or {}
     queue = data.get("queue", "")
     message_id = data.get("message_id", "")
-    worker = data.get("worker", "")
+    worker = _actor_from_request(data.get("worker")) or ""
     lease_id = data.get("lease_id", "")
     if not isinstance(queue, str) or not queue.strip():
         return jsonify({"error": "queue required"}), 400
@@ -568,7 +624,7 @@ def bus_nack_queue_message():
     data = request.get_json() or {}
     queue = data.get("queue", "")
     message_id = data.get("message_id", "")
-    worker = data.get("worker", "")
+    worker = _actor_from_request(data.get("worker")) or ""
     lease_id = data.get("lease_id", "")
     requeue = data.get("requeue", True)
     if not isinstance(queue, str) or not queue.strip():
@@ -616,6 +672,200 @@ def bus_get_orchestration_ready(job_id):
         ready = get_ready_steps(entry["spec"], entry["state"])
         ready = [step for step in ready if step.step_id not in entry["dispatched"]]
     return jsonify({"steps": [step.to_dict() for step in ready]})
+
+
+# ---------------------------------------------------------------------------
+# Path locks (locks.py). Agents lock a repo path before editing it.
+# ---------------------------------------------------------------------------
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _lock_ttl(data, errors):
+    ttl = data.get("ttl_seconds", BUS_LOCK_TTL_DEFAULT_SECONDS)
+    if not _is_number(ttl):
+        errors.append("ttl_seconds must be number")
+        return None
+    if ttl <= 0:
+        errors.append("ttl_seconds must be > 0")
+        return None
+    return float(min(ttl, BUS_LOCK_TTL_MAX_SECONDS))
+
+
+def _lock_id_and_agent(data, errors):
+    lock_id = data.get("lock_id")
+    if not isinstance(lock_id, str) or not lock_id.strip():
+        errors.append("lock_id required")
+        lock_id = None
+    else:
+        lock_id = lock_id.strip()
+    agent = _actor_from_request(data.get("agent"))
+    if agent is None:
+        errors.append("agent required")
+    return lock_id, agent
+
+
+def _lock_error_response(error):
+    if error == ERR_NOT_FOUND:
+        return jsonify({"error": error}), 404
+    return jsonify({"error": error}), 409
+
+
+@app.route("/bus/locks/acquire", methods=["POST"])
+def bus_lock_acquire():
+    data = request.get_json(silent=True) or {}
+    errors = []
+    agent = _actor_from_request(data.get("agent"))
+    if agent is None:
+        errors.append("agent required")
+    resource = repo = None
+    try:
+        resource = normalize_resource(data.get("resource"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    try:
+        repo = normalize_repo(data.get("repo"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    mode = data.get("mode", MODE_EXCLUSIVE)
+    if mode not in MODES:
+        errors.append("mode must be 'exclusive' or 'shared'")
+    ttl = _lock_ttl(data, errors)
+    reason = data.get("reason") or ""
+    if not isinstance(reason, str):
+        errors.append("reason must be string")
+    elif len(reason) > LOCK_REASON_MAX_CHARS:
+        errors.append(f"reason must be at most {LOCK_REASON_MAX_CHARS} characters")
+    wait_seconds = data.get("wait_seconds", 0)
+    if not _is_number(wait_seconds):
+        errors.append("wait_seconds must be number")
+    elif wait_seconds < 0:
+        errors.append("wait_seconds must be >= 0")
+    if errors:
+        return jsonify({"error": "invalid lock request", "details": errors}), 400
+
+    wait_seconds = float(min(wait_seconds, BUS_WAIT_SECONDS_MAX))
+    lock, conflicts, waited = _store.locks.acquire(
+        repo, resource, agent, mode, ttl, reason, wait_seconds
+    )
+    if lock is None:
+        _metric_inc("lock_conflicts")
+        first = conflicts[0]
+        logger.debug(
+            "lock_conflict repo=%s resource=%s agent=%s held_by=%s waited=%s",
+            repo, resource, agent, first["agent"], waited,
+        )
+        return jsonify({
+            "error": "lock conflict",
+            "repo": repo,
+            "resource": resource,
+            "requested_mode": mode,
+            "held_by": first["agent"],
+            "mode": first["mode"],
+            "reason": first["reason"],
+            "expires_at": first["expires_at"],
+            "conflicting_resource": first["resource"],
+            "conflicts": conflicts,
+            "waited_seconds": waited,
+        }), 409
+    _metric_inc("locks_acquired")
+    logger.debug(
+        "lock_acquired repo=%s resource=%s agent=%s mode=%s token=%s",
+        repo, resource, agent, mode, lock["fencing_token"],
+    )
+    body = dict(lock)
+    body["waited_seconds"] = waited
+    return jsonify(body), 200
+
+
+@app.route("/bus/locks/renew", methods=["POST"])
+def bus_lock_renew():
+    data = request.get_json(silent=True) or {}
+    errors = []
+    lock_id, agent = _lock_id_and_agent(data, errors)
+    ttl = _lock_ttl(data, errors)
+    if errors:
+        return jsonify({"error": "invalid lock request", "details": errors}), 400
+    lock, error = _store.locks.renew(lock_id, agent, ttl)
+    if error:
+        return _lock_error_response(error)
+    _metric_inc("locks_renewed")
+    return jsonify(lock), 200
+
+
+@app.route("/bus/locks/release", methods=["POST"])
+def bus_lock_release():
+    data = request.get_json(silent=True) or {}
+    errors = []
+    lock_id, agent = _lock_id_and_agent(data, errors)
+    if errors:
+        return jsonify({"error": "invalid lock request", "details": errors}), 400
+    lock, error = _store.locks.release(lock_id, agent)
+    if error:
+        return _lock_error_response(error)
+    _metric_inc("locks_released")
+    return jsonify({"success": True, "lock": public_view(lock)}), 200
+
+
+@app.route("/bus/locks/validate", methods=["POST"])
+def bus_lock_validate():
+    """Write-boundary check for fencing tokens.
+
+    200 when ``fencing_token`` belongs to a live lock that covers
+    ``resource``; 409 otherwise. A pre-commit hook or the MCP adapter calls
+    this right before writing so a holder whose lock expired is stopped.
+    """
+    data = request.get_json(silent=True) or {}
+    errors = []
+    resource = repo = None
+    try:
+        resource = normalize_resource(data.get("resource"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    try:
+        repo = normalize_repo(data.get("repo"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    token = data.get("fencing_token")
+    if not isinstance(token, int) or isinstance(token, bool):
+        errors.append("fencing_token must be integer")
+    agent = None
+    if data.get("agent") is not None:
+        agent = _actor_from_request(data.get("agent"))
+        if agent is None:
+            errors.append("agent must be a non-empty string")
+    if errors:
+        return jsonify({"error": "invalid lock request", "details": errors}), 400
+    valid, reason, lock = _store.locks.validate(repo, resource, token, agent)
+    body = {"valid": valid, "reason": reason, "repo": repo, "resource": resource,
+            "fencing_token": token, "lock": lock}
+    return jsonify(body), (200 if valid else 409)
+
+
+@app.route("/bus/locks", methods=["GET"])
+def bus_lock_list():
+    resource_prefix = request.args.get("resource_prefix")
+    repo = request.args.get("repo")
+    agent = request.args.get("agent")
+    errors = []
+    if resource_prefix is not None and resource_prefix.strip():
+        try:
+            resource_prefix = normalize_resource(resource_prefix)
+        except ValueError as exc:
+            errors.append(str(exc))
+    else:
+        resource_prefix = None
+    if repo is not None:
+        try:
+            repo = normalize_repo(repo)
+        except ValueError as exc:
+            errors.append(str(exc))
+    if errors:
+        return jsonify({"error": "invalid lock query", "details": errors}), 400
+    locks = _store.locks.list(repo=repo, resource_prefix=resource_prefix, agent=agent or None)
+    return jsonify({"locks": locks, "count": len(locks)})
 
 
 @app.route("/agents/register", methods=["POST"])
@@ -677,6 +927,8 @@ def health():
         "queue_pending_count": pending,
         "queue_leased_count": leased,
         "jobs_active": jobs_active,
+        "locks_held": _store.locks.count(),
+        "locks_durable": _store.locks.durable,
         "version": BUS_VERSION,
         "git_sha": BUS_GIT_SHA or None,
         "process_rss_bytes": rss,
@@ -700,6 +952,11 @@ def metrics():
             "queue_nacks": _metrics["queue_nacks"],
             "orchestration_jobs": _metrics["orchestration_jobs"],
             "orchestration_dispatches": _metrics["orchestration_dispatches"],
+            "locks_acquired": _metrics["locks_acquired"],
+            "lock_conflicts": _metrics["lock_conflicts"],
+            "locks_renewed": _metrics["locks_renewed"],
+            "locks_released": _metrics["locks_released"],
+            "locks_expired": _metrics["locks_expired"],
         }
         timers = {
             "post_latency_ms_avg": _metric_avg(list(_metrics["post_latency_ms"])),
@@ -715,6 +972,7 @@ def metrics():
             "messages_in_memory": messages_in_memory,
             "jobs_in_memory": jobs_in_memory,
             "leased_messages": leased,
+            "locks_held": _store.locks.count(),
         },
         "timers": timers,
     })
