@@ -52,6 +52,12 @@ bash scripts/demo_two_agents.sh
 [B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
 ```
 
+To have work picked up without anyone starting an agent, run
+`scripts/agent_runner.py --queue <queue> --workdir <repo>`: it claims each item,
+starts a Claude Code session with its own run token, and acks the item with
+Claude's reply ([`docs/RUNNER_DEMO.md`](docs/RUNNER_DEMO.md) shows an A2A task
+done this way against the OCI bus).
+
 Try it with real Claude Code sessions, whose prompts never mention the bus:
 `python scripts/claude_agents_trial.py` (needs the `claude` CLI; prints a
 pass/fail report and the model cost).
@@ -206,7 +212,7 @@ run's `actor` as your sender, worker and lock holder, whatever names the body
 contains. `GET /agents/whoami`, `POST /agents/heartbeat`, `GET /agents/runs`
 and `POST /agents/runs/end` manage runs. The shared token keeps working;
 `BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` require run tokens. Agent records go
-through the configured store; runs are in memory.
+and runs go through the configured store (durable with `IAC_BUS_STORE=sqlite`).
 
 ## Environment
 

@@ -43,6 +43,7 @@ This guide registers it for two Claude Code sessions, **agent A** and
 | `BUS_REPO_ROOT` | git top level of `CLAUDE_PROJECT_DIR`, else of the working directory | Used to turn absolute paths into repo-relative ones |
 | `BUS_HTTP_TIMEOUT` | `15` | Seconds per HTTP call, on top of any wait |
 | `BUS_RUN_REGISTER` | `1` | Register a run at startup and use its token; `0` uses the shared token and the name |
+| `BUS_WORK_MESSAGE_ID` | empty | Set by `scripts/agent_runner.py` to the item the session was started for; questions link to it |
 | `BUS_AUTO_STATUS` | `1` | Post a status message whenever the session claims, acks or hands back work; `0` turns it off |
 | `BUS_APPROVAL_FOR` | deleting or renaming files, merging, deploying, changing a public API or schema | Steps that need an approved `request_decision` first, even when the task asks for them; `none` turns it off |
 | `BUS_RUN_TOKEN` | empty | A run token minted by a launcher, used instead of registering |

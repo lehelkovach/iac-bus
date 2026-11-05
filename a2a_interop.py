@@ -399,17 +399,25 @@ def state_from_queue_status(status: Optional[str]) -> Optional[str]:
 
 
 class MemoryA2ATaskTable:
-    """A2A task records, in memory (like locks and runs)."""
+    """A2A task records: in memory, written through a journal with the SQLite store."""
 
-    durable = False
-
-    def __init__(self):
+    def __init__(self, journal: Any = None):
         self._mutex = threading.Lock()
         self._tasks: Dict[str, Dict[str, Any]] = {}
+        self._journal = journal
+        self.durable = journal is not None
+        if journal is not None:
+            for record in journal.load("a2a_task"):
+                self._tasks[record["id"]] = record
+
+    def _save(self, record: Dict[str, Any]) -> None:
+        if self._journal is not None:
+            self._journal.save("a2a_task", record["id"], record)
 
     def create(self, record: Dict[str, Any]) -> Dict[str, Any]:
         with self._mutex:
             self._tasks[record["id"]] = record
+            self._save(record)
             return dict(record)
 
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -425,6 +433,7 @@ class MemoryA2ATaskTable:
             if "state" in fields and fields["state"] != record.get("state"):
                 fields.setdefault("status_ts", time.time())
             record.update(fields)
+            self._save(record)
             return dict(record)
 
     def append(self, task_id: str, key: str, item: Any) -> None:
@@ -432,6 +441,7 @@ class MemoryA2ATaskTable:
             record = self._tasks.get(task_id)
             if record is not None:
                 record.setdefault(key, []).append(item)
+                self._save(record)
 
     def find(self, **match: Any) -> Optional[Dict[str, Any]]:
         with self._mutex:

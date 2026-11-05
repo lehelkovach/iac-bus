@@ -35,6 +35,9 @@ An unexpanded ``${VAR}`` placeholder (what Claude Code leaves in a .mcp.json
                     whenever this session claims, acks or hands back work,
                     so supervisors see progress even if the agent never
                     calls report_status; "0" turns it off
+  BUS_WORK_MESSAGE_ID  set by a launcher (scripts/agent_runner.py) to the
+                    work item this session was started for; questions asked
+                    with request_decision are linked to it
   BUS_RUN_TOKEN     a run token minted by a launcher; used instead of
                     registering a run at startup
   BUS_RUN_REGISTER  "1" (default) registers a run at startup and sends its
@@ -206,6 +209,7 @@ class Config:
     register_run: bool = True
     approval_for: Tuple[str, ...] = DEFAULT_APPROVAL_FOR
     auto_status: bool = True
+    work_message_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.agent_handle:
@@ -241,6 +245,7 @@ class Config:
             register_run=(get("BUS_RUN_REGISTER") or "1").lower() not in _FALSEY,
             approval_for=approval_for,
             auto_status=(get("BUS_AUTO_STATUS") or "1").lower() not in _FALSEY,
+            work_message_id=get("BUS_WORK_MESSAGE_ID"),
         )
 
 
@@ -807,7 +812,8 @@ class BusTools:
             # to show the question to an A2A requester as TASK_STATE_INPUT_REQUIRED.
             with self._mutex:
                 claims = list(self._claims)
-            work_message_id = claims[0] if len(claims) == 1 else ""
+            # Otherwise the item a launcher (scripts/agent_runner.py) started us for.
+            work_message_id = claims[0] if len(claims) == 1 else self.config.work_message_id
         metadata: Dict[str, Any] = {"repo": self.repo}
         if work_message_id:
             metadata["work_message_id"] = work_message_id

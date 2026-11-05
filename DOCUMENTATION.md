@@ -91,9 +91,9 @@ as sent. Run tokens fix that.
    release the locks of, or ack the leases of another.
 3. A run expires `run_ttl_seconds` after its last request or heartbeat. Ending
    it (`POST /agents/runs/end`) revokes the token and releases its locks.
-4. Only the token's SHA-256 hash is stored. Runs are in memory in both store
-   backends; after a restart clients register again (the adapter does this
-   automatically).
+4. Only the token's SHA-256 hash is stored. With `IAC_BUS_STORE=sqlite` runs
+   survive a restart; with the memory store clients register again after one
+   (the adapter does this automatically).
 
 The shared token keeps working as before. `BUS_REQUIRE_RUN_TOKEN=1` makes
 `/bus/*` refuse it (403), so every agent must hold a run token; the shared
@@ -193,8 +193,9 @@ Agents lock a repo path before editing it and release it afterwards. Rules:
   it out, so nobody else can release your lock.
 - Lock events go to channel `locks` as `lock.acquired`, `lock.released` and
   `lock.expired`, sent by `iac-bus`.
-- Locks are in memory in both store backends; a restart drops them
-  (`/health` reports `locks_durable: false`).
+- With `IAC_BUS_STORE=sqlite` locks and the fencing counter survive a
+  restart (`/health` reports `locks_durable: true`); with the memory store a
+  restart drops them.
 
 #### POST /bus/locks/acquire
 Request: `{"resource", "agent", "repo"?, "mode"?: "exclusive"|"shared",
@@ -319,6 +320,15 @@ to and read granted channels (and must name one), claim, ack and nack granted
 queues, and lock under granted paths. It cannot post `orchestration.*`
 messages or list runs or A2A agents.
 
+#### Agent runner (`scripts/agent_runner.py`)
+Wakes agents for queued work. For each item it claims (`--queue`, repeatable)
+it registers a fresh run for the agent, writes an MCP config with that run
+token and `BUS_WORK_MESSAGE_ID`, runs `claude -p` in `--workdir`, then acks
+with Claude's reply as `result` or nacks without requeue with the reason, and
+ends the agent's run (releasing its locks). The agent never receives the
+shared token. Options: `--model`, `--allow` (extra tool permissions),
+`--agent-timeout` (keep it under `--lease`), `--once`, `--max-items`.
+
 #### Outbound bridge (`scripts/a2a_bridge.py`)
 Claims items from every registered agent's `outbound_queue`, locks the item's
 `lock_paths`, sends `SendMessage` to the agent's JSON-RPC endpoint (token from
@@ -335,8 +345,8 @@ Request: `{"handle", "role"?, "purpose"?, "medium"?: web|slack|ide|api|automatio
 1-128 characters of letters, digits and `._:@/+-`.
 
 `201`: `{"success": true, "agent": {...}, "run": {...}, "actor", "run_token"}`.
-The agent record goes through the configured store (`ephemeral` is false with
-SQLite); the run is in memory.
+The agent record and the run go through the configured store (both survive a
+restart with SQLite).
 
 ```bash
 curl -s -X POST http://127.0.0.1:8091/agents/register \
@@ -577,8 +587,9 @@ python3 -m venv venv
 ## Limitations
 - By default messages are stored only in memory; restarts clear all data.
   Set `IAC_BUS_STORE=sqlite` (and `IAC_BUS_DB`) to persist messages, queue
-  leases and agent registrations across restarts. Orchestration job state
-  and path locks are in-memory in both modes.
+  leases, agent registrations, path locks, runs and A2A tasks across
+  restarts. Orchestration job state is in memory in both modes, so an A2A
+  `run-job` task stops following its step after a restart.
 - If you run multiple processes (for example, gunicorn with multiple workers)
   with the default memory store, each process maintains its own message
   list. With the SQLite store, workers share the database file, but the
@@ -588,7 +599,6 @@ python3 -m venv venv
   using run tokens cannot claim another identity. Turn on
   `BUS_REQUIRE_RUN_TOKEN` to require run tokens on `/bus/*`. Roles and grants
   per run are Track B in `docs/IDENTITY-AND-AUTHORITY.md`.
-- Runs, like locks, are in memory in both store backends.
 - Path locks are per process. Run a single process (the default
   `python server.py`) when agents rely on locks.
 
