@@ -70,7 +70,7 @@ class FlaskSession:
 
 def _config(tmp_path=None, **over):
     base = dict(bus_url="http://bus.test", api_token="tok", agent_id="agent-a#abc123",
-                repo="demo", repo_root=(tmp_path or Path("/repo")).resolve())
+                repo="demo", repo_root=(tmp_path or Path("/repo")).resolve(), auto_status=False)
     base.update(over)
     return m.Config(**base)
 
@@ -640,3 +640,25 @@ def test_passthrough_env_keeps_only_proxy_and_ca_settings():
     env = {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem", "NO_PROXY": "",
            "BUS_API_TOKEN": "secret", "HOME": "/root"}
     assert m.passthrough_env(env) == {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem"}
+
+
+def test_work_events_post_status_automatically(bus_app):
+    cfg = _config(agent_id="worker#1", api_token="", auto_status=True)
+    tools = m.BusTools(m.BusClient(cfg, session=FlaskSession(bus_app)), cfg)
+    lead = bus_app.test_client()
+    for task in ("one", "two"):
+        lead.post("/bus/messages", json={"channel": "work", "queue": "work", "sender": "lead", "message": task})
+    first = tools.claim_work("work")
+    tools.ack_work(first["message_id"], result="did one")
+    second = tools.claim_work("work")
+    tools.nack_work(second["message_id"], requeue=False, reason="not mine")
+    status = lead.get("/bus/messages?channel=status").get_json()["messages"]
+    states = [(msg["sender"], msg["message"]["payload"]["state"]) for msg in status]
+    assert states == [("worker#1", "running"), ("worker#1", "completed"), ("worker#1", "running"), ("worker#1", "failed")]
+    assert "did one" in status[1]["message"]["payload"]["summary"]
+
+
+def test_auto_status_can_be_turned_off(tmp_path):
+    cfg = m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path), "BUS_AUTO_STATUS": "0"}, cwd=tmp_path)
+    assert cfg.auto_status is False
+    assert m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path)}, cwd=tmp_path).auto_status is True

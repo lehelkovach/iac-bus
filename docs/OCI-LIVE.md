@@ -15,19 +15,23 @@ Captain-approved public hostname: **`iac-bus.knowshowgo.com`**.
 | DNS | `iac-bus.knowshowgo.com` **not resolving** — create A → `129.153.192.75` |
 | Sibling reference | `knowshowgo.com` / `api.knowshowgo.com` → `129.153.118.145` (`ksg-main-eb91`) |
 
-## Coordination dev VM (measured 2026-11-03)
+## Coordination dev VM (measured 2026-11-05)
 
-A second VM runs the coordination branch (locks, MCP adapter, run tokens) so
-the production bus above stays untouched.
+A second VM runs `dev` (locks, MCP adapter, run tokens, A2A) over HTTPS, so the
+production bus above stays untouched.
 
 | Field | Value |
 | --- | --- |
-| Instance | `iac-bus-coord-dev` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
-| Public / private IP | `129.146.71.34` / `10.0.1.140` (relaunched 2026-11-03 03:13 UTC with Phase 4) |
-| Code | branch `claude/iac-bus-coordination-phases-vhy9iw` at `aeb329a` (locks, MCP, run tokens, A2A), `/opt/iac-bus`, `iac-bus.service` |
-| Bus | `http://129.146.71.34:8101`, token required (`/health` and `/.well-known/agent-card.json` open) |
-| Deployed by | OCI API only: `scripts/oci_launch_bus_vm.py` (cloud-init clones, installs, opens iptables, starts systemd) |
-| Tags | `created-by=oci_launch_bus_vm.py`, `branch=claude/iac-bus-coordination-phases-vhy9iw` |
+| Instance | `iac-bus-coord-dev-https` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
+| Public / private IP | `129.146.105.237` / `10.0.1.160` |
+| Bus | **`https://129-146-105-237.sslip.io`** (Caddy, Let's Encrypt), token required (`/health` and `/.well-known/agent-card.json` open). The bus listens on 127.0.0.1:8101 only |
+| Code | `dev` at `1ee6ed7`, `/opt/iac-bus`, `iac-bus.service`, `caddy.service` |
+| Network | NSG `iac-bus-coord-dev-https` (ingress TCP 80 and 443 only), attached to this VM's VNIC only |
+| Deployed by | `scripts/oci_launch_bus_vm.py --branch dev --https --nsg-id <nsg>` (OCI API only) |
+| Verified from a cloud agent | `scripts/bus_smoke.sh` 20/20 and `scripts/claude_agents_trial.py` (see `docs/CLAUDE_TRIAL_OCI.md`) |
+
+The earlier plain-HTTP dev VMs (`129.146.110.72`, `129.146.71.98`,
+`129.146.71.34`) are terminated.
 
 Facts found while deploying:
 
@@ -38,13 +42,10 @@ Facts found while deploying:
 - The bus token for `iac-bus-coord-dev` is in its cloud-init `user_data`
   (instance metadata). To read it without printing it to a shared log:
   `oci compute instance get --instance-id <id> --query 'data.metadata."user_data"' --raw-output | base64 -d | grep BUS_API_TOKEN`.
-- Plain HTTP on `:8101` sends the token in clear text. The Claude Code cloud
-  egress proxy refuses to forward an `Authorization` header to a non-TLS port,
-  so cloud agents cannot use this bus until it has HTTPS. Plan:
-  `scripts/oci_launch_bus_vm.py --https` (Caddy + Let's Encrypt on
-  `<ip-with-dashes>.sslip.io`, bus bound to localhost), which needs ingress on
-  80 and 443 for this VM (an NSG passed with `--nsg-id`). Opening those ports is
-  an owner decision; the script never changes network rules.
+- Plain HTTP on `:8101` sends the token in clear text, and the Claude Code
+  cloud egress proxy refuses to forward an `Authorization` header to a non-TLS
+  port. That is why the dev VM now runs behind Caddy with HTTPS. The production
+  VM `iac-bus-6c58` still serves plain HTTP on `:8101`.
 
 ### Turning on HTTPS for the coordination VM
 

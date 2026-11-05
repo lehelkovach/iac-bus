@@ -31,6 +31,10 @@ An unexpanded ``${VAR}`` placeholder (what Claude Code leaves in a .mcp.json
                     them (default: deleting or renaming files, merging,
                     deploying, changing a public API or schema); "none"
                     turns the policy off
+  BUS_AUTO_STATUS   "1" (default) posts a status message on the status channel
+                    whenever this session claims, acks or hands back work,
+                    so supervisors see progress even if the agent never
+                    calls report_status; "0" turns it off
   BUS_RUN_TOKEN     a run token minted by a launcher; used instead of
                     registering a run at startup
   BUS_RUN_REGISTER  "1" (default) registers a run at startup and sends its
@@ -201,6 +205,7 @@ class Config:
     run_token: str = ""
     register_run: bool = True
     approval_for: Tuple[str, ...] = DEFAULT_APPROVAL_FOR
+    auto_status: bool = True
 
     def __post_init__(self) -> None:
         if not self.agent_handle:
@@ -235,6 +240,7 @@ class Config:
             run_token=get("BUS_RUN_TOKEN"),
             register_run=(get("BUS_RUN_REGISTER") or "1").lower() not in _FALSEY,
             approval_for=approval_for,
+            auto_status=(get("BUS_AUTO_STATUS") or "1").lower() not in _FALSEY,
         )
 
 
@@ -664,6 +670,15 @@ class BusTools:
 
     # -------------------------------------------------------------- work
 
+    def _auto_status(self, state: str, summary: str) -> None:
+        """Best-effort status post for work events (BUS_AUTO_STATUS)."""
+        if not self.config.auto_status:
+            return
+        try:
+            self.report_status(state, summary, task="")
+        except (BusError, ValueError):
+            pass
+
     def claim_work(self, queue: str, lease_seconds: int = 300) -> Dict[str, Any]:
         status, data = self.client.request(
             "POST",
@@ -677,6 +692,7 @@ class BusTools:
         msg = data["message"]
         with self._mutex:
             self._claims[msg["id"]] = {"queue": queue, "lease_id": msg["lease_id"]}
+        self._auto_status("running", f"claimed work {msg['id']} from queue {queue}")
         return {
             "claimed": True,
             "queue": queue,
@@ -701,6 +717,14 @@ class BusTools:
         if status == 200:
             with self._mutex:
                 self._claims.pop(message_id, None)
+            if path.endswith("/ack"):
+                outcome = extra.get("result") or "done"
+                self._auto_status("completed", f"acked work {message_id} on {queue}: {str(outcome)[:200]}")
+            else:
+                verb = "handed back" if extra.get("requeue", True) else "dropped"
+                state = "idle" if extra.get("requeue", True) else "failed"
+                self._auto_status(state, f"{verb} work {message_id} on {queue}" +
+                                  (f": {extra['reason'][:200]}" if extra.get("reason") else ""))
             return {"ok": True, "message_id": message_id, "queue": queue}
         if status == 404:
             return {"ok": False, "message_id": message_id, "error": "message not found (lease expired and it was re-claimed or acked)"}
