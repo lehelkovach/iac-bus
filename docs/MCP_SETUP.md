@@ -43,6 +43,7 @@ This guide registers it for two Claude Code sessions, **agent A** and
 | `BUS_REPO_ROOT` | git top level of `CLAUDE_PROJECT_DIR`, else of the working directory | Used to turn absolute paths into repo-relative ones |
 | `BUS_HTTP_TIMEOUT` | `15` | Seconds per HTTP call, on top of any wait |
 | `BUS_RUN_REGISTER` | `1` | Register a run at startup and use its token; `0` uses the shared token and the name |
+| `BUS_APPROVAL_FOR` | deleting or renaming files, merging, deploying, changing a public API or schema | Steps that need an approved `request_decision` first, even when the task asks for them; `none` turns it off |
 | `BUS_RUN_TOKEN` | empty | A run token minted by a launcher, used instead of registering |
 
 **Identity.** The adapter registers a run at startup and the bus names it

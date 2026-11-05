@@ -613,3 +613,30 @@ def test_run_identity_end_to_end(secured_bus):
     assert b.acquire_lock("src/app.py")["acquired"] is True
     whoami = secured_bus.test_client().get("/agents/whoami", headers={"Authorization": "Bearer " + b.client.run_token})
     assert whoami.get_json()["actor"].startswith("claude.b#")
+
+
+# ------------------------------------------------------------ approval policy
+
+
+def test_approval_policy_defaults_and_overrides(tmp_path):
+    base = {"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path)}
+    assert m.Config.from_env(base, cwd=tmp_path).approval_for == m.DEFAULT_APPROVAL_FOR
+    custom = m.Config.from_env(dict(base, BUS_APPROVAL_FOR="dropping tables, force-pushing"), cwd=tmp_path)
+    assert custom.approval_for == ("dropping tables", "force-pushing")
+    assert m.Config.from_env(dict(base, BUS_APPROVAL_FOR="none"), cwd=tmp_path).approval_for == ()
+
+
+def test_server_instructions_carry_the_policy():
+    pytest.importorskip("mcp")
+    tools = _tools(FakeSession())
+    text = m.build_server(tools).instructions
+    assert "APPROVAL POLICY" in text and "deleting or renaming files" in text
+    assert "even when your task" in text
+    tools.config.approval_for = ()
+    assert "APPROVAL POLICY" not in m.build_server(tools).instructions
+
+
+def test_passthrough_env_keeps_only_proxy_and_ca_settings():
+    env = {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem", "NO_PROXY": "",
+           "BUS_API_TOKEN": "secret", "HOME": "/root"}
+    assert m.passthrough_env(env) == {"HTTPS_PROXY": "http://proxy:3128", "REQUESTS_CA_BUNDLE": "/ca.pem"}
