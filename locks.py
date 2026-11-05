@@ -30,9 +30,12 @@ edit it, and release it when they are done. The rules:
 Lock ids are capabilities: they are returned to the acquirer only and are left
 out of every listing, event and conflict report.
 
-The table is in memory in both store backends (see ``store.py``).
+The table works in memory. With the SQLite store (``IAC_BUS_STORE=sqlite``)
+it writes every change through a journal (``store.SqliteJournal``) and reloads
+on startup, so locks and the fencing counter survive a restart. The bus is a
+single process, so memory stays authoritative.
 
-TODO(L5): ``docs/sql/ACP_V2_SCHEMA.sql`` declares
+TODO(Postgres): ``docs/sql/ACP_V2_SCHEMA.sql`` declares
 ``resource_locks.resource_key`` as ``UNIQUE``. That allows one row per
 resource, so it cannot represent several holders of a shared lock on the same
 path. Before locks move to SQL the table needs a ``(resource_key, holder)``
@@ -135,19 +138,41 @@ class MemoryLockTable:
     to the bus without deadlocking.
     """
 
-    durable = False
-
     def __init__(
         self,
         clock: Callable[[], float] = time.time,
         first_token: Optional[int] = None,
         on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        journal: Any = None,
     ):
         self._clock = clock
         self._cond = threading.Condition(threading.Lock())
         self._locks: Dict[str, Dict[str, Any]] = {}
         self._next_token = int(first_token if first_token is not None else time.time() * 1000)
         self.on_event = on_event
+        # Optional write-through store (store.SqliteJournal). Memory stays the
+        # working copy; the journal lets locks and the token counter survive
+        # a restart.
+        self._journal = journal
+        self.durable = journal is not None
+        if journal is not None:
+            for lock in journal.load("lock"):
+                self._locks[lock["lock_id"]] = lock
+            saved = journal.get("meta", "lock_next_token") or {}
+            tokens = [lock["fencing_token"] for lock in self._locks.values()]
+            self._next_token = max([self._next_token, int(saved.get("value", 0))] + [t + 1 for t in tokens])
+
+    def _save(self, lock: Dict[str, Any]) -> None:
+        if self._journal is not None:
+            self._journal.save("lock", lock["lock_id"], lock)
+
+    def _drop(self, lock_id: str) -> None:
+        if self._journal is not None:
+            self._journal.delete("lock", lock_id)
+
+    def _save_counter(self) -> None:
+        if self._journal is not None:
+            self._journal.save("meta", "lock_next_token", {"value": self._next_token})
 
     # ----------------------------------------------------------- internals
 
@@ -161,6 +186,7 @@ class MemoryLockTable:
         expired = [lock for lock in self._locks.values() if lock["expires_at"] <= now]
         for lock in expired:
             del self._locks[lock["lock_id"]]
+            self._drop(lock["lock_id"])
         if expired:
             self._cond.notify_all()
         return [(EVENT_EXPIRED, public_view(lock)) for lock in expired]
@@ -229,6 +255,8 @@ class MemoryLockTable:
                     }
                     self._next_token += 1
                     self._locks[lock["lock_id"]] = lock
+                    self._save(lock)
+                    self._save_counter()
                     events.append((EVENT_ACQUIRED, public_view(lock)))
                     lock = dict(lock)
                     break
@@ -255,6 +283,7 @@ class MemoryLockTable:
                 lock["renewed_at"] = now
                 lock["expires_at"] = now + ttl_seconds
                 lock["ttl_seconds"] = ttl_seconds
+                self._save(lock)
                 result, error = dict(lock), None
         self._emit(events)
         return result, error
@@ -270,6 +299,7 @@ class MemoryLockTable:
                 result, error = None, ERR_OWNER
             else:
                 del self._locks[lock_id]
+                self._drop(lock_id)
                 self._cond.notify_all()
                 view = public_view(lock)
                 view["released_at"] = now
@@ -287,6 +317,7 @@ class MemoryLockTable:
             released = []
             for lock in mine:
                 del self._locks[lock["lock_id"]]
+                self._drop(lock["lock_id"])
                 view = public_view(lock)
                 view["released_at"] = now
                 events.append((EVENT_RELEASED, view))

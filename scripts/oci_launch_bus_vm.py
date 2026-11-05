@@ -71,7 +71,7 @@ def oci_config() -> Dict[str, str]:
     return cfg
 
 
-def cloud_init(branch: str, port: int, token: str, https: bool) -> str:
+def cloud_init(branch: str, port: int, token: str, https: bool, store: str = "sqlite") -> str:
     bind = "127.0.0.1" if https else "0.0.0.0"
     caddy = ""
     if https:
@@ -113,7 +113,8 @@ say "git $SHA"
 {discover}python3 -m venv $APP/venv
 $APP/venv/bin/pip install --upgrade pip
 $APP/venv/bin/pip install -r $APP/requirements.txt
-mkdir -p /etc/iac-bus
+mkdir -p /etc/iac-bus /var/lib/iac-bus
+chmod 700 /var/lib/iac-bus
 umask 077
 cat > /etc/iac-bus/iac-bus.env <<ENVFILE
 BUS_HOST={bind}
@@ -126,6 +127,8 @@ BUS_VERSION=$(cat $APP/VERSION)
 BUS_GIT_SHA=$SHA
 BUS_API_TOKEN={token}
 BUS_PUBLIC_URL=$PUBLIC_URL
+IAC_BUS_STORE={store}
+IAC_BUS_DB=/var/lib/iac-bus/iac-bus.db
 ENVFILE
 umask 022
 install -m 0644 $APP/systemd/iac-bus.service /etc/systemd/system/iac-bus.service
@@ -161,6 +164,8 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8101)
     ap.add_argument("--https", action="store_true", help="Caddy + Let's Encrypt on <ip>.sslip.io; needs 80/443 ingress")
     ap.add_argument("--nsg-id", action="append", default=[], help="NSG(s) to attach to the VNIC")
+    ap.add_argument("--store", choices=["sqlite", "memory"], default="sqlite",
+                    help="bus store; sqlite keeps messages, locks, runs and A2A tasks across restarts")
     ap.add_argument("--secrets-dir", default="")
     ap.add_argument("--wait", type=int, default=600, help="seconds to wait for the bootstrap to finish")
     args = ap.parse_args()
@@ -195,7 +200,7 @@ def main() -> int:
         create_vnic_details=oci.core.models.CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True,
                                                               nsg_ids=args.nsg_id or None),
         metadata={"ssh_authorized_keys": f"{pub} {args.name}",
-                  "user_data": base64.b64encode(cloud_init(args.branch, args.port, token, args.https).encode()).decode()},
+                  "user_data": base64.b64encode(cloud_init(args.branch, args.port, token, args.https, args.store).encode()).decode()},
         freeform_tags={"created-by": "oci_launch_bus_vm.py", "branch": args.branch},
     )
     inst = compute.launch_instance(details).data

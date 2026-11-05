@@ -18,8 +18,8 @@ Rules:
 * A run expires ``ttl_seconds`` after it was last used (sliding expiry); any
   authenticated request or a heartbeat extends it. Ending a run revokes its
   token immediately.
-* The table is in memory in both store backends, like locks. After a bus
-  restart, run tokens are unknown and clients register again.
+* The table works in memory; with the SQLite store it is written through a
+  journal and reloaded on startup, so run tokens survive a restart.
 
 Not here yet (Track B in docs/IDENTITY-AND-AUTHORITY.md): principals, grants,
 child runs minted by runs, signatures.
@@ -55,19 +55,38 @@ def public_run(run: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class MemoryRunTable:
-    durable = False
+    # Sliding expiry touches a run on every request; write it through at most
+    # this often (the expiry is far longer).
+    TOUCH_SAVE_SECONDS = 30.0
 
-    def __init__(self, clock: Callable[[], float] = time.time):
+    def __init__(self, clock: Callable[[], float] = time.time, journal: Any = None):
         self._clock = clock
         self._mutex = threading.Lock()
         self._runs: Dict[str, Dict[str, Any]] = {}
         self._by_hash: Dict[str, str] = {}
+        self._saved_at: Dict[str, float] = {}
+        self._journal = journal
+        self.durable = journal is not None
+        if journal is not None:
+            for run in journal.load("run"):
+                self._runs[run["run_id"]] = run
+                self._by_hash[run["token_hash"]] = run["run_id"]
+
+    def _save(self, run: Dict[str, Any], touch: bool = False) -> None:
+        if self._journal is None:
+            return
+        now = self._clock()
+        if touch and now - self._saved_at.get(run["run_id"], 0.0) < self.TOUCH_SAVE_SECONDS:
+            return
+        self._journal.save("run", run["run_id"], run)
+        self._saved_at[run["run_id"]] = now
 
     def _expire_locked(self, now: float) -> None:
         for run in self._runs.values():
             if run["status"] == STATUS_ACTIVE and run["expires_at"] <= now:
                 run["status"] = STATUS_EXPIRED
                 run["ended_at"] = run["expires_at"]
+                self._save(run)
 
     def create(
         self,
@@ -109,6 +128,7 @@ class MemoryRunTable:
         with self._mutex:
             self._runs[run_id] = run
             self._by_hash[run["token_hash"]] = run_id
+            self._save(run)
         return public_run(run), token
 
     def authenticate(self, token: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -127,6 +147,7 @@ class MemoryRunTable:
                 return None, f"run {run['status']}"
             run["last_seen_at"] = now
             run["expires_at"] = now + run["ttl_seconds"]
+            self._save(run, touch=True)
             return public_run(run), None
 
     def heartbeat(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -138,6 +159,7 @@ class MemoryRunTable:
                 return None
             run["last_seen_at"] = now
             run["expires_at"] = now + run["ttl_seconds"]
+            self._save(run)
             return public_run(run)
 
     def end(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -149,6 +171,7 @@ class MemoryRunTable:
                 return None
             run["status"] = STATUS_ENDED
             run["ended_at"] = now
+            self._save(run)
             return public_run(run)
 
     def get(self, run_id: str) -> Optional[Dict[str, Any]]:

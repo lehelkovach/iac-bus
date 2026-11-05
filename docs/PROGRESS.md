@@ -14,7 +14,7 @@ The plan of record for identity and coordination is
 | **L2** | Agent registry + per-run identity (ID1–ID2) | **Partly done** on `dev`: run tokens, bus-derived identity, grants; registry still minimal (no principals) |
 | **L3** | Tasks + dependency invalidation + provenance | Not started |
 | **L4** | Repo/path locks + fencing (ID3) | **Done** on `dev`: in-memory locks, `/bus/locks/*`, fencing `validate` |
-| **L5** | Durable ledger (SQLite→Postgres), retries/DLQ, prod maturity | Partial: opt-in SQLite store on `dev` (PR #20); locks and jobs still in memory |
+| **L5** | Durable ledger (SQLite→Postgres), retries/DLQ, prod maturity | Partial: SQLite store keeps messages, leases, agents, locks, runs and A2A tasks; orchestration jobs still in memory; no Postgres, DLQ or event ledger |
 
 KeyChain is **out of ladder scope** (not a bus dependency).
 
@@ -82,7 +82,7 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - The MCP adapter registers a run at startup, heartbeats, re-registers after
   a bus restart, and ends its run on exit. `BUS_RUN_TOKEN` accepts a
   launcher-minted token; `BUS_RUN_REGISTER=0` keeps the Phase 2 behaviour.
-- Runs are in memory in both store backends, like locks.
+- Runs are durable with the SQLite store (since the durable-state change).
 - Not done (Track B): principals, grants, runs minting child runs, signatures.
 - Gates: `pytest -q` green, `scripts/bus_smoke.sh` 18/18, demo exits 0 and
   shows a refused spoof.
@@ -128,7 +128,7 @@ its own branch and PR to `dev`, stacked on the previous phase.
   (`requirements-a2a-test.txt`, CI only).
 - Gates: `pytest -q` green, `scripts/bus_smoke.sh` 20/20,
   `scripts/a2a_curl_demo.sh` runs end to end (output in `docs/A2A_DEMO.md`).
-- A2A tasks are in memory, like locks and runs.
+- A2A tasks are durable with the SQLite store, like locks and runs.
 
 ### OCI over HTTPS, real Claude agents (2026-11-05)
 
@@ -148,6 +148,15 @@ its own branch and PR to `dev`, stacked on the previous phase.
   (`docs/RUNNER_DEMO.md`).
 - Not done from ID6: `POST /mcp` on the bus itself (Streamable HTTP); the
   adapter is still a local stdio process.
+
+### Durable state (2026-11-05)
+
+- With `IAC_BUS_STORE=sqlite`, locks (and the fencing counter), runs and A2A
+  tasks are written through `store.SqliteJournal` and reloaded on startup;
+  ended runs older than 7 days and finished A2A tasks older than 30 days are
+  pruned. Orchestration job state is still in memory.
+- `scripts/oci_launch_bus_vm.py` now deploys with the SQLite store by default
+  (`/var/lib/iac-bus/iac-bus.db`).
 
 ## Dogfood evidence (local + nested)
 

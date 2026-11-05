@@ -230,9 +230,10 @@ Details that the design left open:
   messages, queues for claim, ack and nack, lock paths for acquire. Restricted
   runs cannot post `orchestration.*` messages or list runs and agents. The
   operator can also restrict any run with `grants` on `/agents/register`.
-- **Storage**: A2A task records are in memory, like locks and runs. Card and
-  grants are stored with the agent record, so with `IAC_BUS_STORE=sqlite`
-  registrations survive a restart (the run tokens do not).
+- **Storage**: A2A task records, like locks and runs, live in memory and are
+  written through to SQLite with `IAC_BUS_STORE=sqlite`, so tasks, run tokens
+  and registrations (card and grants) survive a restart. Orchestration job
+  state does not, so `run-job` tasks stop following their step after one.
 - **Bridge limits**: queue leases cannot be renewed, so run one bridge per bus
   and keep remote tasks shorter than `--lease` (default 900 s). If a question
   gets no decision within `decision_wait`, the bridge cancels the remote task
