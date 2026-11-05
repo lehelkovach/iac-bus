@@ -138,6 +138,17 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Found on the way: one agent never called `report_status`; the adapter now
   posts status on claim, ack and nack (`BUS_AUTO_STATUS`).
 
+### Agent runner (2026-11-05)
+
+- `scripts/agent_runner.py` wakes agents (identity plan ID6, runner half):
+  claims queue work, starts `claude -p` with a fresh run token and the MCP
+  adapter, acks with Claude's reply, ends the agent's run.
+- End to end against the OCI bus over HTTPS: an A2A partner's task was done
+  by a real Claude session in 29 s and returned as the A2A artifact
+  (`docs/RUNNER_DEMO.md`).
+- Not done from ID6: `POST /mcp` on the bus itself (Streamable HTTP); the
+  adapter is still a local stdio process.
+
 ## Dogfood evidence (local + nested)
 
 | Job | Result |

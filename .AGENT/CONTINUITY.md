@@ -22,6 +22,6 @@ boundary join.
 - `skills/openclaw/iac_bus.py`, an HTTP client and CLI (extranet branch);
 - `scripts/swarm_harness.py` (swarm branch).
 
-**Waking agents:** neither MCP nor the bus can start an agent's turn. The
-waking piece is a runner or bridge that mints a run and launches or resumes
-the agent (ID6).
+**Waking agents:** neither MCP nor the bus can start an agent's turn.
+`scripts/agent_runner.py` is the waking piece: it mints a run per queued item
+and launches `claude -p` with the MCP adapter (see `docs/RUNNER_DEMO.md`).
