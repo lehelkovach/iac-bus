@@ -177,6 +177,11 @@ next_claim="$(curl -fsS \
   -H 'Content-Type: application/json' \
   -d '{"queue":"smoke-orch","worker":"smoke-worker","lease_seconds":30}')"
 next_step="$(printf '%s' "${next_claim}" | json_get 'd.get("message",{}).get("message",{}).get("step",{}).get("id","")')"
+next_msg_id="$(printf '%s' "${next_claim}" | json_get 'd.get("message",{}).get("id","")')"
+next_lease="$(printf '%s' "${next_claim}" | json_get 'd.get("message",{}).get("lease_id","")')"
+# Leave nothing queued behind on a shared bus.
+curl -fsS -X POST "${BUS_URL}/bus/queues/ack" -H "${AUTH_HEADER}" -H 'Content-Type: application/json' \
+  -d "{\"queue\":\"smoke-orch\",\"worker\":\"smoke-worker\",\"message_id\":\"${next_msg_id}\",\"lease_id\":\"${next_lease}\"}" >/dev/null || true
 
 if [[ "${orch_ok}" == "True" && "${claim_step}" == "design" && "${status_ok}" == "True" && "${next_step}" == "impl" ]]; then
   ok "orchestration job -> claim -> status -> next assignment"

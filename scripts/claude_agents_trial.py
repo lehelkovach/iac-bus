@@ -370,14 +370,17 @@ def scenario_queue(ctx: Dict[str, Any]) -> Dict[str, Any]:
             for key in tasks:
                 if re.search(rf'"task_id":\s*"{key}"', text):
                     claimed[agent.name] = key
-    health = bus.get("/health")
+    # Only this trial's queue: the bus may be shared with other work.
+    leftover = [m for m in bus.get("/bus/messages", channel="trial-work", include_queue="true", limit=200)["messages"]
+                if m.get("queue") == queue and m.get("status") in ("pending", "leased")]
     checks = {
         "each agent claimed a different task": len(set(claimed.values())) == 2,
         "both files were created": (repo / "src/math_utils.py").exists() and (repo / "src/text_utils.py").exists(),
         "both agents acked their task": all(any(not c["error"] and re.search(r'"ok":\s*true', c.get("result") or "")
                                                 for c in a.calls("bus.ack_work")) for a in agents),
-        "agents reported status": all(a.calls("bus.report_status") for a in agents),
-        "queue drained": health.get("queue_pending_count", 0) == 0 and health.get("queue_leased_count", 0) == 0,
+        "supervisors can see both agents' status": all(
+            any(m.get("sender", "").startswith(f"claude.trial.{a.name}#") for m in bus.channel("status")) for a in agents),
+        "queue drained": not leftover,
     }
     return {"agents": agents, "checks": checks, "events": [], "notes": [f"claims: {claimed}"]}
 

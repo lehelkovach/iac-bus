@@ -1,6 +1,6 @@
 # IAC-Bus progress tracker
 
-_Last updated: 2026-11-03. Dated facts are readings, not standing promises._
+_Last updated: 2026-11-05. Dated facts are readings, not standing promises._
 
 ## Ladder status
 
@@ -11,9 +11,9 @@ The plan of record for identity and coordination is
 | --- | --- | --- |
 | **L0** | HTTP bus, queues, orchestration jobs, local smoke/pytest | **Done** (master) |
 | **L1** | `wait_seconds`, richer `/health` + `/metrics`, structured logs, expanded smoke | **Done** on `dev` (PR #17) |
-| **L2** | Agent registry + per-run identity (ID1–ID2) | **Phase 2b in review**: run tokens, bus-derived identity; registry still a stub (no principals, no dedupe) |
+| **L2** | Agent registry + per-run identity (ID1–ID2) | **Partly done** on `dev`: run tokens, bus-derived identity, grants; registry still minimal (no principals) |
 | **L3** | Tasks + dependency invalidation + provenance | Not started |
-| **L4** | Repo/path locks + fencing (ID3) | **Phase 1 in review**: in-memory locks, `/bus/locks/*`, fencing `validate` |
+| **L4** | Repo/path locks + fencing (ID3) | **Done** on `dev`: in-memory locks, `/bus/locks/*`, fencing `validate` |
 | **L5** | Durable ledger (SQLite→Postgres), retries/DLQ, prod maturity | Partial: opt-in SQLite store on `dev` (PR #20); locks and jobs still in memory |
 
 KeyChain is **out of ladder scope** (not a bus dependency).
@@ -27,11 +27,11 @@ its own branch and PR to `dev`, stacked on the previous phase.
 
 | Phase | Scope | Branch | Status |
 | --- | --- | --- | --- |
-| 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | In review (PR #21) |
-| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | In review (PR #22) |
-| 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | In review (PR #23) |
-| 3 | A2A mapping (design only), then pause for review | `claude/iac-bus-p3-a2a-mapping-vhy9iw` | In review (PR #24); approved 2026-11-03 |
-| 4 | A2A interop (Agent Card, JSON-RPC, card registration, grants, outbound bridge) | `claude/iac-bus-p4-a2a-vhy9iw` | In review |
+| 1 | L4 path locks with fencing (in memory) | `claude/iac-bus-p1-locks-vhy9iw` | **Merged** to `dev` (#21) |
+| 2 | MCP adapter (`mcp_server.py`, stdio) + two-agent demo | `claude/iac-bus-p2-mcp-vhy9iw` | **Merged** (#22) |
+| 2b | Per-run tokens; the bus derives the caller from its token | `claude/iac-bus-p2b-run-tokens-vhy9iw` | **Merged** (#23) |
+| 3 | A2A mapping (design only), then pause for review | `claude/iac-bus-p3-a2a-mapping-vhy9iw` | **Merged** (#24) |
+| 4 | A2A interop (Agent Card, JSON-RPC, card registration, grants, outbound bridge) | `claude/iac-bus-p4-a2a-vhy9iw` | **Merged** (#26; OCI/trial work in #25) |
 
 ### Phase 1 facts
 
@@ -97,9 +97,10 @@ its own branch and PR to `dev`, stacked on the previous phase.
 
 ### OCI deploy and Claude trials (2026-11-03)
 
-- `iac-bus-coord-dev` (`129.146.71.34:8101`) runs the stack tip, deployed
-  through the OCI API with `scripts/oci_launch_bus_vm.py`; `/health` reports
-  `0.2.0-dev` at `aeb329a` (Phase 4 included) and the A2A card is public. The production VM `iac-bus-6c58` is unchanged.
+- `iac-bus-coord-dev-https` (`https://129-146-105-237.sslip.io`) runs `dev`
+  behind Caddy with Let's Encrypt, deployed through the OCI API with
+  `scripts/oci_launch_bus_vm.py --https`; ports 80/443 open through a
+  VM-only NSG. Smoke 20/20 from a cloud agent over HTTPS. The production VM `iac-bus-6c58` is unchanged.
   Details and the HTTPS blocker: `docs/OCI-LIVE.md`.
 - `scripts/claude_agents_trial.py` runs real `claude -p` sessions through the
   MCP adapter. Prompts never mention the bus. First run (local bus, Sonnet):
@@ -117,8 +118,6 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Re-run on the fixed adapter: locks 6/6, decision 3/3 (the agent asked,
   the scripted human said no, the file stayed), queue 5/5. Full transcript:
   `docs/CLAUDE_TRIAL.md`.
-- Not yet run against the OCI bus: it needs HTTPS first (owner decision on
-  opening 80/443 for that VM).
 
 ### Phase 4 facts
 
@@ -130,6 +129,14 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - Gates: `pytest -q` green, `scripts/bus_smoke.sh` 20/20,
   `scripts/a2a_curl_demo.sh` runs end to end (output in `docs/A2A_DEMO.md`).
 - A2A tasks are in memory, like locks and runs.
+
+### OCI over HTTPS, real Claude agents (2026-11-05)
+
+- Smoke 20/20 and `claude_agents_trial.py` 14/14 (locks 6/6, decision 3/3,
+  queue 5/5) from a cloud session against `https://129-146-105-237.sslip.io`.
+  Report: `docs/CLAUDE_TRIAL_OCI.md`.
+- Found on the way: one agent never called `report_status`; the adapter now
+  posts status on claim, ack and nack (`BUS_AUTO_STATUS`).
 
 ## Dogfood evidence (local + nested)
 
@@ -155,5 +162,5 @@ its own branch and PR to `dev`, stacked on the previous phase.
 1. DNS: A record `iac-bus.knowshowgo.com` → `129.153.192.75` (optional CNAME/www later).
 2. TLS: Caddy/nginx on VM for `:443` → bus `:8101` (or migrate prod listen to `:8091` behind proxy).
 3. Inject deploy secrets (`IAC_BUS_PROD_*` or `KSG_DEV_VM_*`) for CI hot/prod deploys.
-4. Review and merge coordination Phases 1, 2 and 2b into `dev` in order (#21, #22, then 2b).
+4. Promote `dev` to `master` when ready (workflows are manual-only since #27).
 5. Dogfood two Claude Code sessions on one repo through the MCP adapter.
