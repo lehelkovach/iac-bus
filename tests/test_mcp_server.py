@@ -662,3 +662,16 @@ def test_auto_status_can_be_turned_off(tmp_path):
     cfg = m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path), "BUS_AUTO_STATUS": "0"}, cwd=tmp_path)
     assert cfg.auto_status is False
     assert m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path)}, cwd=tmp_path).auto_status is True
+
+
+def test_launcher_work_item_links_decisions(tmp_path):
+    cfg = m.Config.from_env({"BUS_REPO": "x", "BUS_REPO_ROOT": str(tmp_path), "BUS_WORK_MESSAGE_ID": "item-7"}, cwd=tmp_path)
+    assert cfg.work_message_id == "item-7"
+    s = FakeSession()
+    s.reply("POST", "/bus/messages", 201, {"success": True, "message": {"id": "q1", "sender": "a"}})
+    s.reply("GET", "/bus/messages", 200, {"messages": []})
+    tools = _tools(s, work_message_id="item-7")
+    tools.request_decision("Ship it?")
+    posted = s.calls[0]["json"]
+    assert posted["headers"] == {"work_message_id": "item-7"}
+    assert posted["message"]["payload"]["metadata"]["work_message_id"] == "item-7"
