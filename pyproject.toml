@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iac-bus"
+description = "Coordination bus for coding agents: path locks with fencing, work queues, run identity, approvals, MCP tools and A2A."
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["version"]
+dependencies = [
+    "flask>=2.0.0",
+    "requests>=2.25.0",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.3,<3"]
+serve = ["gunicorn>=20.0.0"]
+dev = ["pytest>=7.0.0", "jsonschema", "watchdog", "mcp>=2.3,<3", "a2a-sdk>=1.3,<2"]
+
+[project.scripts]
+iac-bus = "server:main"
+iac-bus-mcp = "mcp_server:main"
+iac-bus-runner = "agent_runner:main"
+iac-bus-bridge = "a2a_bridge:main"
+
+[project.urls]
+Homepage = "https://github.com/lehelkovach/iac-bus"
+Documentation = "https://github.com/lehelkovach/iac-bus/blob/dev/DOCUMENTATION.md"
+
+[tool.setuptools]
+py-modules = ["server", "mcp_server", "agent_runner", "a2a_bridge", "locks", "runs", "store", "a2a_interop", "orchestration", "agent_contract", "version"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}

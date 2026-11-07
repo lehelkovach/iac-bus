@@ -1728,7 +1728,8 @@ def metrics():
     })
 
 
-if __name__ == "__main__":
+def main():
+    """Run the bus with Flask's threaded server (console script: iac-bus)."""
     host = os.environ.get("BUS_HOST", "0.0.0.0")
     port = int(os.environ.get("BUS_PORT", "8091"))
     logger.info(
@@ -1741,3 +1742,7 @@ if __name__ == "__main__":
         IAC_BUS_DB if _store.durable else "-",
     )
     app.run(host=host, port=port, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

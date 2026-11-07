@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "iac-bus": {
+      "command": "iac-bus-mcp",
+      "env": {
+        "BUS_URL": "${BUS_URL:-http://127.0.0.1:8101}",
+        "BUS_API_TOKEN": "${BUS_API_TOKEN}",
+        "BUS_AGENT_ID": "${BUS_AGENT_ID:-claude}"
+      }
+    }
+  }
+}

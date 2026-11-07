@@ -13,9 +13,8 @@ from flask import Flask, jsonify, request
 from werkzeug.serving import make_server
 
 ROOT = Path(__file__).resolve().parents[1]
-for path in (ROOT, ROOT / "scripts"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import a2a_bridge  # noqa: E402
 import a2a_interop as a2a  # noqa: E402
