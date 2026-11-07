@@ -319,6 +319,15 @@ to and read granted channels (and must name one), claim, ack and nack granted
 queues, and lock under granted paths. It cannot post `orchestration.*`
 messages or list runs or A2A agents.
 
+#### Agent runner (`scripts/agent_runner.py`)
+Wakes agents for queued work. For each item it claims (`--queue`, repeatable)
+it registers a fresh run for the agent, writes an MCP config with that run
+token and `BUS_WORK_MESSAGE_ID`, runs `claude -p` in `--workdir`, then acks
+with Claude's reply as `result` or nacks without requeue with the reason, and
+ends the agent's run (releasing its locks). The agent never receives the
+shared token. Options: `--model`, `--allow` (extra tool permissions),
+`--agent-timeout` (keep it under `--lease`), `--once`, `--max-items`.
+
 #### Outbound bridge (`scripts/a2a_bridge.py`)
 Claims items from every registered agent's `outbound_queue`, locks the item's
 `lock_paths`, sends `SendMessage` to the agent's JSON-RPC endpoint (token from
