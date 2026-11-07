@@ -15,23 +15,25 @@ Captain-approved public hostname: **`iac-bus.knowshowgo.com`**.
 | DNS | `iac-bus.knowshowgo.com` **not resolving** — create A → `129.153.192.75` |
 | Sibling reference | `knowshowgo.com` / `api.knowshowgo.com` → `129.153.118.145` (`ksg-main-eb91`) |
 
-## Coordination dev VM (measured 2026-11-05)
+## Coordination dev VM (measured 2026-11-07)
 
 A second VM runs `dev` (locks, MCP adapter, run tokens, A2A) over HTTPS, so the
 production bus above stays untouched.
 
 | Field | Value |
 | --- | --- |
-| Instance | `iac-bus-coord-dev-https` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
-| Public / private IP | `129.146.105.237` / `10.0.1.160` |
-| Bus | **`https://129-146-105-237.sslip.io`** (Caddy, Let's Encrypt), token required (`/health` and `/.well-known/agent-card.json` open). The bus listens on 127.0.0.1:8101 only |
-| Code | `dev` at `1ee6ed7`, `/opt/iac-bus`, `iac-bus.service`, `caddy.service` |
+| Instance | `iac-bus-coord-dev-https-2` (A1.Flex, 1 OCPU, 6 GB, Ubuntu 22.04 aarch64, same subnet as `iac-bus-6c58`) |
+| Public / private IP | `129.146.109.36` / `10.0.1.213` |
+| Bus | **`https://129-146-109-36.sslip.io`** (Caddy, Let's Encrypt), token required (`/health`, `/ui` and `/.well-known/agent-card.json` open). The bus listens on 127.0.0.1:8101 only |
+| Code | `dev` at `5ebb3d1` (release 0.2.0 content), `/opt/iac-bus`, `iac-bus.service`, `caddy.service`; `IAC_BUS_STORE=sqlite` at `/var/lib/iac-bus/iac-bus.db` |
 | Network | NSG `iac-bus-coord-dev-https` (ingress TCP 80 and 443 only), attached to this VM's VNIC only |
 | Deployed by | `scripts/oci_launch_bus_vm.py --branch dev --https --nsg-id <nsg>` (OCI API only) |
-| Verified from a cloud agent | `scripts/bus_smoke.sh` 20/20 and `scripts/claude_agents_trial.py` (see `docs/CLAUDE_TRIAL_OCI.md`) |
+| Verified from a cloud agent | `scripts/bus_smoke.sh` 20/20 on 2026-11-07; earlier instance: `docs/CLAUDE_TRIAL_OCI.md`, `docs/DOGFOOD-2026-11-07.md`, `docs/BENCHMARKS.md` |
 
-The earlier plain-HTTP dev VMs (`129.146.110.72`, `129.146.71.98`,
-`129.146.71.34`) are terminated.
+The earlier dev VMs (`129.146.110.72`, `129.146.71.98`, `129.146.71.34`, and
+the first HTTPS one at `129.146.105.237`) are terminated. The bus token is in
+the instance's cloud-init `user_data`; read it with the OCI CLI as described
+above, never from a shared log.
 
 Facts found while deploying:
 
