@@ -55,6 +55,10 @@ to the shared token and the suffixed name.
 Run ``python mcp_server.py --check`` to print the resolved configuration and
 ping the bus without starting the MCP server.
 
+Held locks are also written to ``<git dir>/iac-bus-locks.json`` (mode 0600,
+with the session's token) so ``scripts/hooks/pre-commit`` can refuse a commit
+whose staged files are not covered by a live exclusive lock.
+
 The tool layer (``BusTools``) has no MCP dependency, so it can later be
 mounted on the bus itself as a Streamable HTTP endpoint
 (docs/IDENTITY-AND-AUTHORITY.md rung ID6) without rewriting the tools.
@@ -143,6 +147,30 @@ def repo_name_from_remote(url: str) -> Optional[str]:
     tail = re.split(r"[/:]", url.strip().rstrip("/"))[-1]
     tail = tail[:-4] if tail.endswith(".git") else tail
     return tail or None
+
+
+LOCK_FILE_NAME = "iac-bus-locks.json"
+
+
+def lock_file_path(repo_root: Path) -> Optional[Path]:
+    """``<git dir>/iac-bus-locks.json`` for this checkout or worktree, or None outside git."""
+    git_dir = _git(repo_root, "rev-parse", "--git-dir")
+    if not git_dir:
+        return None
+    path = Path(git_dir)
+    if not path.is_absolute():
+        path = repo_root / path
+    return path / LOCK_FILE_NAME
+
+
+def write_lock_file(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
 
 
 def detect_repo_name(cwd: Path) -> Optional[str]:
@@ -372,6 +400,7 @@ class BusTools:
         self.run_id: str = ""
         self.identity_source = "name (shared token)"
         client.on_run_rejected = self._reregister
+        self._lock_file = lock_file_path(config.repo_root)
 
     # --------------------------------------------------------- identity
 
@@ -439,6 +468,7 @@ class BusTools:
             with self._mutex:
                 self._held.clear()
                 self._claims.clear()
+            self._persist_locks()
         return ok
 
     def heartbeat(self) -> bool:
@@ -486,6 +516,23 @@ class BusTools:
     def _forget(self, lock_id: str) -> None:
         with self._mutex:
             self._held.pop(lock_id, None)
+        self._persist_locks()
+
+    def _persist_locks(self) -> None:
+        """Write held locks for scripts/hooks/pre-commit (best effort)."""
+        if self._lock_file is None:
+            return
+        try:
+            write_lock_file(self._lock_file, {
+                "bus_url": self.config.bus_url,
+                "repo": self.repo,
+                "agent": self.agent_id,
+                "token": self.client.run_token or self.config.api_token,
+                "updated_at": time.time(),
+                "locks": [{k: v for k, v in lock.items() if k != "lock_id"} for lock in self.held_locks()],
+            })
+        except OSError:
+            pass
 
     def held_locks(self) -> List[Dict[str, Any]]:
         with self._mutex:
@@ -534,6 +581,7 @@ class BusTools:
             }
             with self._mutex:
                 self._held[data["lock_id"]] = held
+            self._persist_locks()
             return {
                 "acquired": True,
                 "path": data["resource"],
@@ -611,6 +659,7 @@ class BusTools:
                 with self._mutex:
                     if lid in self._held:
                         self._held[lid]["expires_at"] = data["expires_at"]
+                self._persist_locks()
                 renewed.append({"path": data["resource"], "expires_in_seconds": _in_seconds(data["expires_at"])})
             elif status == 404:
                 self._forget(lid)
@@ -738,6 +787,22 @@ class BusTools:
     def ack_work(self, message_id: str, result: str = "", lease_id: str = "", queue: str = "") -> Dict[str, Any]:
         extra: Dict[str, Any] = {"result": result} if result else {}
         return self._finish_work("/bus/queues/ack", message_id, lease_id, queue, extra)
+
+    def renew_work(self, message_id: str, lease_seconds: int = 300, lease_id: str = "", queue: str = "") -> Dict[str, Any]:
+        with self._mutex:
+            tracked = self._claims.get(message_id, {})
+        lease_id = lease_id or tracked.get("lease_id", "")
+        queue = queue or tracked.get("queue", "")
+        if not lease_id or not queue:
+            raise ValueError("unknown message_id for this session; pass queue and lease_id")
+        status, data = self.client.request("POST", "/bus/queues/renew", {
+            "queue": queue, "message_id": message_id, "worker": self.agent_id, "lease_id": lease_id,
+            "lease_seconds": lease_seconds})
+        if status == 200:
+            return {"ok": True, "message_id": message_id, "lease_expires_in_seconds": _in_seconds(data["lease_until"])}
+        return {"ok": False, "message_id": message_id,
+                "error": (data or {}).get("error", f"status {status}"),
+                "next": "The lease is gone: another agent may claim this work. Stop and claim_work again."}
 
     def nack_work(self, message_id: str, requeue: bool = True, reason: str = "", lease_id: str = "",
                   queue: str = "") -> Dict[str, Any]:
@@ -979,6 +1044,10 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "claim_work": (
         "Take the next work item from a bus queue under a lease. Call ack_work when it is done or "
         "nack_work to hand it back. Acquire locks on the files the work touches before editing them."
+    ),
+    "renew_work": (
+        "Extend the lease on a claimed work item when the work will take longer than the lease (default 300 s). "
+        "Renew before it expires; an expired lease cannot be renewed and the item goes back to the queue."
     ),
     "ack_work": (
         "Mark a claimed work item as done. Pass result: a short summary of what you did (files changed, "

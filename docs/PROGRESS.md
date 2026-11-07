@@ -158,6 +158,20 @@ its own branch and PR to `dev`, stacked on the previous phase.
 - `scripts/oci_launch_bus_vm.py` now deploys with the SQLite store by default
   (`/var/lib/iac-bus/iac-bus.db`).
 
+### Release readiness (2026-11-07)
+
+- Installable: `pip install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"`
+  gives `iac-bus`, `iac-bus-mcp`, `iac-bus-runner`, `iac-bus-bridge`.
+- `docs/BENCHMARKS.md`: 4 uncoordinated agents lose 75% of writes, 0% with
+  locks; fencing refuses a stale writer; ~500 lock cycles/s locally; the
+  Claude trial passed 14/14 three times in a row (~$0.40 each).
+- `docs/DOGFOOD-2026-11-07.md`: two runners did three real maintenance tasks
+  on a clone of this repo through the hosted bus; all diffs accepted.
+- New: `POST /bus/queues/renew` (+ `renew_work`; runner and bridge renew),
+  pre-commit fencing hook (`scripts/install_hooks.sh`), status page `/ui`.
+- `docs/LAUNCH_PLAN.md`: honest usefulness read, demo script, channels.
+- Still missing for a public launch: a LICENSE file (owner's choice).
+
 ## Dogfood evidence (local + nested)
 
 | Job | Result |

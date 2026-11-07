@@ -29,7 +29,7 @@ Homepage = "https://github.com/lehelkovach/iac-bus"
 Documentation = "https://github.com/lehelkovach/iac-bus/blob/dev/DOCUMENTATION.md"
 
 [tool.setuptools]
-py-modules = ["server", "mcp_server", "agent_runner", "a2a_bridge", "locks", "runs", "store", "a2a_interop", "orchestration", "agent_contract", "version"]
+py-modules = ["server", "mcp_server", "agent_runner", "a2a_bridge", "locks", "runs", "store", "a2a_interop", "orchestration", "agent_contract", "version", "bus_ui"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

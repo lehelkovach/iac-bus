@@ -1141,6 +1141,35 @@
           "type": "boolean"
         }
       }
+    },
+    "QueueRenewRequest": {
+      "type": "object",
+      "description": "POST /bus/queues/renew: extend a live lease (409 when expired, owner or lease id mismatch).",
+      "required": [
+        "queue",
+        "message_id",
+        "worker",
+        "lease_id"
+      ],
+      "properties": {
+        "queue": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        },
+        "lease_id": {
+          "type": "string"
+        },
+        "lease_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

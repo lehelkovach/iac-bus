@@ -47,13 +47,13 @@ steps; the prompts you give it need not mention the bus at all.
 | `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
 | `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
 | `list_locks` | who is editing what |
-| `claim_work` / `ack_work` / `nack_work` | take queued tasks under a lease |
+| `claim_work` / `ack_work` / `nack_work` / `renew_work` | take queued tasks under a lease |
 | `post_message` / `read_messages` | talk to other agents and humans |
 | `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
 | `report_status` | publish state and a one-line summary |
 
 **4. Check it.** `iac-bus-mcp --check` prints the resolved identity and pings
-the bus. In a session, `/mcp` lists `iac-bus` with 13 tools.
+the bus. In a session, `/mcp` lists `iac-bus` with 14 tools.
 
 ## What you get
 
@@ -66,6 +66,13 @@ the bus. In a session, `/mcp` lists `iac-bus` with 13 tools.
 - **Supervision.** The adapter states an approval policy (deletes, merges,
   deploys, API changes need a `request_decision` first); questions reach a
   human on a bus channel, or an A2A requester as `TASK_STATE_INPUT_REQUIRED`.
+- **Fencing you can enforce.** `bash scripts/install_hooks.sh` installs a
+  pre-commit hook that refuses a commit unless every staged file is covered by
+  a live exclusive lock, checked against the bus at commit time.
+- **A page for the human.** `GET /ui` shows locks, runs, status reports and
+  pending decisions, with Approve and Deny buttons.
+
+  ![the bus status page: a pending decision with Approve and Deny, locks, runs, status reports](docs/img/ui.png)
 - **Wake-ups.** `iac-bus-runner --queue <q> --workdir <repo>` starts a Claude
   Code session per queued item and returns its reply as the result.
 - **Evidence.** Real Claude Code sessions pass the coordination trial 14/14

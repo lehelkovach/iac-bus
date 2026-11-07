@@ -16,8 +16,8 @@ piece (identity plan rung ID6). For every item it claims it:
 5. ends the agent's run, which revokes its token and releases any locks it
    still holds; posts running / completed / failed on the ``status`` channel.
 
-The runner holds the queue lease (one runner per queue; leases are not
-renewable, so keep ``--agent-timeout`` below ``--lease``).
+The runner holds the queue lease and renews it while the agent runs, so a
+task may outlive ``--lease``; several runners can share a queue.
 
   BUS_URL=https://bus.example BUS_API_TOKEN=... \\
     iac-bus-runner --queue repo-tasks --workdir ~/src/my-repo --once
@@ -35,6 +35,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -181,6 +182,8 @@ class Runner:
         self.say(f"{item['id']}: starting {agent_actor} for {work_text(item)['text'][:70]!r}")
         self._status("running", f"started {agent_actor} for work {item['id']} on {queue}", item["id"])
 
+        stop = threading.Event()
+        threading.Thread(target=self._keepalive, args=(queue, item, stop), daemon=True).start()
         with tempfile.TemporaryDirectory(prefix="iac-runner-") as tmp:
             cfg_path = Path(tmp) / "mcp.json"
             cfg_path.write_text(json.dumps({"mcpServers": {"iac-bus": {
@@ -211,6 +214,7 @@ class Runner:
             except subprocess.TimeoutExpired:
                 ok, text = False, f"agent did not finish within {self.agent_timeout}s"
             record["seconds"] = round(time.time() - started, 1)
+        stop.set()
         try:
             self._finish(queue, item, ok=ok, text=text)
         finally:
@@ -218,6 +222,15 @@ class Runner:
         record.update(outcome="completed" if ok else "failed", result=text[:RESULT_MAX_CHARS])
         self.history.append(record)
         return record
+
+    def _keepalive(self, queue: str, item: Dict[str, Any], stop: threading.Event) -> None:
+        """Renew the item's lease every third of its length while the agent runs."""
+        while not stop.wait(max(1.0, self.lease / 3.0)):
+            try:
+                self.bus.post("/bus/queues/renew", {"queue": queue, "message_id": item["id"], "worker": self.actor,
+                                                    "lease_id": item["lease_id"], "lease_seconds": self.lease})
+            except requests.RequestException:
+                pass
 
     def _finish(self, queue: str, item: Dict[str, Any], ok: bool, text: str) -> None:
         body = {"queue": queue, "message_id": item["id"], "worker": self.actor, "lease_id": item["lease_id"]}

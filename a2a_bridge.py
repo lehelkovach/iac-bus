@@ -20,8 +20,8 @@ work there. This bridge claims each item and:
    nack(requeue=true) to retry later. It also posts a ``report_result``
    message on channel ``a2a.<handle>``; and releases its locks.
 
-Run one bridge per bus (queue leases are not renewable; a task that outlives
-``--lease`` can be claimed twice).
+The bridge renews the item's lease while the remote task runs, so a task may
+outlive ``--lease``.
 
   BUS_URL=https://bus.example BUS_API_TOKEN=... PARTNER_AGENT_TOKEN=... \\
     iac-bus-bridge                          # loop
@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -163,8 +164,11 @@ class Bridge:
         lock_paths = [p for p in work.get("lock_paths") or [] if isinstance(p, str)]
         self.say(f"{agent['handle']}: claimed {item['id']} ({text[:60]!r})")
 
+        stop = threading.Event()
+        threading.Thread(target=self._keepalive, args=(agent, item, stop), daemon=True).start()
         held, refused = self._lock(lock_paths, agent["handle"])
         if refused:
+            stop.set()
             self._release(held)
             self._finish(agent, item, "nack", requeue=True, reason=f"path busy: {refused}")
             return "requeued"
@@ -182,6 +186,7 @@ class Bridge:
         except requests.RequestException as exc:
             outcome = ("nack-retry", {"reason": f"agent unreachable: {exc}"})
         finally:
+            stop.set()
             self._release(held)
         effect, info = outcome
         if effect == "ack":
@@ -261,6 +266,15 @@ class Bridge:
         return None
 
     # ----------------------------------------------------------- bus side
+
+    def _keepalive(self, agent: Dict[str, Any], item: Dict[str, Any], stop: threading.Event) -> None:
+        while not stop.wait(max(1.0, self.lease / 3.0)):
+            try:
+                self.bus.post("/bus/queues/renew", {"queue": agent["outbound_queue"], "message_id": item["id"],
+                                                    "worker": self.actor, "lease_id": item["lease_id"],
+                                                    "lease_seconds": self.lease})
+            except requests.RequestException:
+                pass
 
     def _lock(self, paths: List[str], agent_handle: str) -> Tuple[Dict[str, Tuple[str, int]], str]:
         held: Dict[str, Tuple[str, int]] = {}

@@ -675,3 +675,18 @@ def test_launcher_work_item_links_decisions(tmp_path):
     posted = s.calls[0]["json"]
     assert posted["headers"] == {"work_message_id": "item-7"}
     assert posted["message"]["payload"]["metadata"]["work_message_id"] == "item-7"
+
+
+def test_renew_work_uses_tracked_lease():
+    s = FakeSession()
+    s.reply("POST", "/bus/queues/claim", 200, {"message": {"id": "M1", "lease_id": "L", "lease_until": time.time() + 30,
+                                                           "type": "task", "sender": "lead", "message": "x"}})
+    s.reply("POST", "/bus/queues/renew", 200, {"success": True, "lease_until": time.time() + 600})
+    s.reply("POST", "/bus/queues/renew", 409, {"error": "lease expired"})
+    tools = _tools(s)
+    tools.claim_work("work")
+    out = tools.renew_work("M1", lease_seconds=600)
+    assert out["ok"] is True and out["lease_expires_in_seconds"] > 500
+    assert s.calls[1]["json"] == {"queue": "work", "message_id": "M1", "worker": "agent-a#abc123", "lease_id": "L",
+                                  "lease_seconds": 600}
+    assert tools.renew_work("M1")["ok"] is False

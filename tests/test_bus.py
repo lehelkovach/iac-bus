@@ -188,6 +188,28 @@ def test_health_exposes_ops_gauges(monkeypatch):
     assert "process_rss_bytes" in data
 
 
+def test_health_returns_core_fields(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    client = server.app.test_client()
+
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    for field in ("version", "locks_held", "runs_active", "a2a_tasks"):
+        assert field in data
+
+
+def test_metrics_returns_lock_run_a2a_counters(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    client = server.app.test_client()
+
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    counters = resp.get_json()["counters"]
+    for name in ("locks_acquired", "runs_registered", "a2a_requests"):
+        assert name in counters
+
+
 def test_metrics_increment_on_post_claim_ack(monkeypatch):
     server = _load_server(monkeypatch, token="")
     server._bus_messages.clear()
@@ -297,3 +319,40 @@ def test_agents_register_stub(monkeypatch):
     assert data["agent"]["ephemeral"] is True
     assert data["agent"]["agent_handle"] == "agent:cursor.iac-bus.0@web"
     assert data["agent"]["agent_uuid"]
+
+
+def test_queue_lease_can_be_renewed_until_it_expires(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    client = server.app.test_client()
+    client.post("/bus/messages", json={"channel": "q", "queue": "work", "message": "task"})
+    msg = client.post("/bus/queues/claim", json={"queue": "work", "worker": "w", "lease_seconds": 30}).get_json()["message"]
+    body = {"queue": "work", "message_id": msg["id"], "worker": "w", "lease_id": msg["lease_id"], "lease_seconds": 300}
+
+    renewed = client.post("/bus/queues/renew", json=body)
+    assert renewed.status_code == 200
+    assert renewed.get_json()["lease_until"] > msg["lease_until"] + 200
+
+    assert client.post("/bus/queues/renew", json=dict(body, worker="other")).status_code == 409
+    assert client.post("/bus/queues/renew", json=dict(body, lease_id="nope")).status_code == 409
+    assert client.post("/bus/queues/renew", json=dict(body, message_id="missing")).status_code == 404
+    assert client.post("/bus/queues/renew", json=dict(body, lease_seconds=0)).status_code == 400
+
+    # once the lease has lapsed, renewal is refused and the item is claimable again
+    for message in server._bus_messages:
+        if message["id"] == msg["id"]:
+            message["lease_until"] = time.time() - 1
+    assert client.post("/bus/queues/renew", json=body).status_code == 409
+    assert client.post("/bus/queues/claim", json={"queue": "work", "worker": "w2"}).status_code == 200
+    assert client.get("/metrics").get_json()["counters"]["queue_renews"] == 1
+
+
+def test_ui_page_is_public_and_answers_decisions_through_the_api(monkeypatch):
+    server = _load_server(monkeypatch, token="secret")
+    client = server.app.test_client()
+    page = client.get("/ui")
+    assert page.status_code == 200 and page.mimetype == "text/html"
+    assert "Pending decisions" in page.get_data(as_text=True)
+    assert "/bus/messages?channel=decisions" in page.get_data(as_text=True)
+    # the page itself needs no token, the API it calls does
+    assert client.get("/bus/locks").status_code == 401

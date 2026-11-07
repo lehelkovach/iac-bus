@@ -183,6 +183,24 @@ class MemoryStore:
                 return True
         return False
 
+    def renew_lease(
+        self, queue: str, message_id: str, worker: str, lease_id: str, lease_seconds: float, now: float
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Extend a live lease held by ``worker``; an expired lease cannot be renewed."""
+        with self._lock:
+            for message in self.messages:
+                if message.get("id") != message_id or message.get("queue") != queue:
+                    continue
+                if message.get("status") != STATUS_LEASED or message.get("lease_until", 0) <= now:
+                    return None, "lease expired"
+                if message.get("leased_by") != worker:
+                    return None, "lease owner mismatch"
+                if message.get("lease_id") != lease_id:
+                    return None, "lease id mismatch"
+                message["lease_until"] = now + lease_seconds
+                return dict(message), None
+        return None, "not found"
+
     def message_count(self) -> int:
         with self._lock:
             return len(self.messages)
@@ -515,6 +533,23 @@ class SqliteStore:
                 cur = self._conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
             self._conn.commit()
             return cur.rowcount > 0
+
+    def renew_lease(
+        self, queue: str, message_id: str, worker: str, lease_id: str, lease_seconds: float, now: float
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        with self._lock:
+            row = self._fetch(message_id)
+            if not row or row["queue"] != queue:
+                return None, "not found"
+            if row["status"] != STATUS_LEASED or (row["lease_until"] or 0) <= now:
+                return None, "lease expired"
+            if row["leased_by"] != worker:
+                return None, "lease owner mismatch"
+            if row["lease_id"] != lease_id:
+                return None, "lease id mismatch"
+            self._conn.execute("UPDATE messages SET lease_until=? WHERE id=?", (now + lease_seconds, message_id))
+            self._conn.commit()
+            return self._row_to_message(self._fetch(message_id)), None
 
     def message_count(self) -> int:
         with self._lock:

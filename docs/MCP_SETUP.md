@@ -156,12 +156,29 @@ project `.mcp.json` entry with the same name; entries are not merged.
 
 ### Check it
 
-- Inside each session, `/mcp` should show `iac-bus` connected with 13 tools.
+- Inside each session, `/mcp` should show `iac-bus` connected with 14 tools.
 - From a shell, `claude mcp list` shows the status and `claude mcp get iac-bus`
   shows the entry and any issue.
 - For spawn problems, start with `claude --debug='mcp'`.
 - Claude Code sets `CLAUDE_PROJECT_DIR` for the servers it spawns; the adapter
   uses it to find the repo root. Set `BUS_REPO_ROOT` to override.
+
+## 4b. Enforce the locks at commit time (optional, recommended)
+
+The lock tools are cooperative: an agent that ignores them can still write.
+The pre-commit hook makes the fencing token a gate. In each checkout or
+worktree:
+
+```bash
+bash /path/to/iac-bus/scripts/install_hooks.sh /path/to/your-repo
+```
+
+The adapter writes the locks it holds, and its token, to
+`<git dir>/iac-bus-locks.json` (mode 0600). At `git commit`, the hook refuses
+the commit unless every staged file is covered by a live exclusive lock,
+checked against the bus right then. Without a lock file (a human committing)
+the hook allows the commit; `IAC_BUS_HOOK_STRICT=1` requires one, and
+`IAC_BUS_HOOK_SKIP=1` bypasses it once.
 
 ## 5. Tell the agents the rules
 
@@ -189,8 +206,12 @@ curl -s "http://127.0.0.1:8101/bus/messages?channel=locks"  -H "Authorization: B
 curl -s "http://127.0.0.1:8101/bus/messages?channel=status" -H "Authorization: Bearer devtoken"
 ```
 
-Answer a `request_decision` (the agent shows the `conversation_id`; requests
-are on channel `decisions`):
+Or open **`<bus>/ui`** in a browser: it shows locks, runs, status reports and
+the pending decisions, and answers a decision with Approve or Deny. Enter the
+bus token once; the page keeps it in the browser.
+
+Answer a `request_decision` by hand (the agent shows the `conversation_id`;
+requests are on channel `decisions`):
 
 ```bash
 curl -s -X POST http://127.0.0.1:8101/bus/messages \

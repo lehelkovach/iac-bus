@@ -234,10 +234,9 @@ Details that the design left open:
   written through to SQLite with `IAC_BUS_STORE=sqlite`, so tasks, run tokens
   and registrations (card and grants) survive a restart. Orchestration job
   state does not, so `run-job` tasks stop following their step after one.
-- **Bridge limits**: queue leases cannot be renewed, so run one bridge per bus
-  and keep remote tasks shorter than `--lease` (default 900 s). If a question
-  gets no decision within `decision_wait`, the bridge cancels the remote task
-  and fails the item.
+- **Bridge limits**: the bridge renews the item's lease while the remote task
+  runs. If a question gets no decision within `decision_wait`, the bridge
+  cancels the remote task and fails the item.
 - **Cancel** removes a work item nobody has claimed, marks a job step
   skipped, and posts `cancel_task` on `a2a.task.<id>` for a worker that has
   already claimed it.

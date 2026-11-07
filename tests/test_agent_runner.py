@@ -117,3 +117,14 @@ def test_max_items(bus):
     runner = _runner(bus)
     assert runner.process_once(max_items=2) == 2
     assert _get(bus, "/health").json()["queue_pending_count"] == 1
+
+
+def test_runner_renews_the_lease_while_the_agent_runs(bus, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENT_SLEEP", "2.5")
+    _enqueue(bus)
+    runner = _runner(bus, lease=2)  # renewed every second; the agent takes longer than the lease
+    assert runner.process_once() == 1
+    assert runner.history[0]["outcome"] == "completed"
+    health = _get(bus, "/health").json()
+    assert health["queue_pending_count"] == 0 and health["queue_leased_count"] == 0
+    assert _get(bus, "/metrics").json()["counters"]["queue_renews"] >= 1

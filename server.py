@@ -27,6 +27,8 @@ from locks import (
     public_view,
     resource_covers,
 )
+from bus_ui import PAGE as UI_PAGE
+from version import get_version
 from a2a_interop import (
     A2A_VERSION,
     CARD_PATH,
@@ -127,7 +129,7 @@ BUS_A2A_ALLOW_HOSTS = [h for h in os.environ.get("BUS_A2A_ALLOW_HOSTS", "").spli
 GRANT_KEYS = ("skills", "queues", "channels", "lock_paths")
 LOCK_EVENTS_CHANNEL = "locks"
 LOCK_REASON_MAX_CHARS = 500
-BUS_VERSION = os.environ.get("BUS_VERSION", "0.1.0")
+BUS_VERSION = os.environ.get("BUS_VERSION") or get_version()
 BUS_GIT_SHA = os.environ.get("BUS_GIT_SHA", os.environ.get("GITHUB_SHA", ""))
 # Storage backend: "memory" (default, state lost on restart) or "sqlite"
 # (durable; file named by IAC_BUS_DB). See store.py.
@@ -159,6 +161,7 @@ _metrics = {
     "queue_claims": 0,
     "queue_acks": 0,
     "queue_nacks": 0,
+    "queue_renews": 0,
     "orchestration_jobs": 0,
     "orchestration_dispatches": 0,
     "locks_acquired": 0,
@@ -217,7 +220,7 @@ def _auth_middleware():
     g.request_started = time.time()
     g.run = None
     g.auth = "none"
-    if request.path in ("/health", "/metrics", CARD_PATH):
+    if request.path in ("/health", "/metrics", "/ui", CARD_PATH):
         return None
     return _require_auth()
 
@@ -833,6 +836,37 @@ def bus_nack_queue_message():
     _metric_inc("queue_nacks")
     _a2a_on_queue_done(msg, acked=False, requeue=requeue, result=None, reason=reason)
     return jsonify({"success": True, "message": msg})
+
+
+@app.route("/bus/queues/renew", methods=["POST"])
+def bus_renew_queue_lease():
+    """Extend a live lease. Long tasks (a Claude session, an external agent) call this periodically."""
+    data = request.get_json() or {}
+    queue = data.get("queue", "")
+    message_id = data.get("message_id", "")
+    worker = _actor_from_request(data.get("worker")) or ""
+    lease_id = data.get("lease_id", "")
+    lease_seconds = data.get("lease_seconds", BUS_QUEUE_LEASE_SECONDS)
+    if not isinstance(queue, str) or not queue.strip():
+        return jsonify({"error": "queue required"}), 400
+    if not isinstance(message_id, str) or not message_id.strip():
+        return jsonify({"error": "message_id required"}), 400
+    if not isinstance(worker, str) or not worker.strip():
+        return jsonify({"error": "worker required"}), 400
+    if not isinstance(lease_id, str) or not lease_id.strip():
+        return jsonify({"error": "lease_id required"}), 400
+    if not _is_number(lease_seconds) or lease_seconds <= 0:
+        return jsonify({"error": "lease_seconds must be > 0"}), 400
+    if not _grant_allows("queues", queue.strip()):
+        return _forbidden("queue", queue.strip())
+    msg, error = _store.renew_lease(queue.strip(), message_id.strip(), worker.strip(), lease_id.strip(),
+                                    float(lease_seconds), time.time())
+    if error == "not found":
+        return jsonify({"error": "message not found"}), 404
+    if error:
+        return jsonify({"error": error}), 409
+    _metric_inc("queue_renews")
+    return jsonify({"success": True, "message": msg, "lease_until": msg["lease_until"]})
 
 
 @app.route("/bus/orchestration/jobs/<job_id>", methods=["GET"])
@@ -1652,6 +1686,14 @@ def agents_a2a_list():
     return jsonify({"agents": agents, "count": len(agents)})
 
 
+@app.route("/ui", methods=["GET"])
+def ui():
+    """Status page (bus_ui.py). Public HTML; it asks for a token and calls the API with it."""
+    resp = app.response_class(UI_PAGE, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/health", methods=["GET"])
 def health():
     now = time.time()
@@ -1694,6 +1736,7 @@ def metrics():
             "queue_claims": _metrics["queue_claims"],
             "queue_acks": _metrics["queue_acks"],
             "queue_nacks": _metrics["queue_nacks"],
+            "queue_renews": _metrics["queue_renews"],
             "orchestration_jobs": _metrics["orchestration_jobs"],
             "orchestration_dispatches": _metrics["orchestration_dispatches"],
             "locks_acquired": _metrics["locks_acquired"],
