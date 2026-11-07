@@ -67,14 +67,37 @@ logging, the event envelope is expected to expand with fields such as:
 | `parent_event_id` | string | Links interpretation/result events to source input |
 
 ## Authentication
-If `BUS_API_TOKEN` is set, all endpoints except `/health` require a bearer
-token header:
+If `BUS_API_TOKEN` is set, all endpoints except `/health` and `/metrics`
+require a bearer token header:
 
 ```
 Authorization: Bearer <token>
 ```
 
 If `BUS_API_TOKEN` is empty, the API accepts requests without authentication.
+
+### Run tokens: identity derived by the bus
+
+The shared token says "this caller may use the bus", not who the caller is:
+with it, the `sender`, `worker` and `agent` names in a request are trusted
+as sent. Run tokens fix that.
+
+1. A holder of the shared token (a human, a launcher, or the MCP adapter at
+   startup) calls `POST /agents/register` and gets a `run_token`
+   (`iacrun_...`, shown once) plus an `actor` name `<handle>#<run>`.
+2. Requests that send `Authorization: Bearer <run_token>` authenticate as
+   that run. The bus uses the run's `actor` as the sender, worker and lock
+   holder, and ignores the names in the body. One run cannot post as,
+   release the locks of, or ack the leases of another.
+3. A run expires `run_ttl_seconds` after its last request or heartbeat. Ending
+   it (`POST /agents/runs/end`) revokes the token and releases its locks.
+4. Only the token's SHA-256 hash is stored. With `IAC_BUS_STORE=sqlite` runs
+   survive a restart; with the memory store clients register again after one
+   (the adapter does this automatically).
+
+The shared token keeps working as before. `BUS_REQUIRE_RUN_TOKEN=1` makes
+`/bus/*` refuse it (403), so every agent must hold a run token; the shared
+token can then only register and manage runs under `/agents/*`.
 
 ## API Reference
 
@@ -106,23 +129,270 @@ Query parameters:
 - `channel` (string, optional) - filter by channel
 - `since_id` (string, optional) - return messages after this ID
 - `limit` (int, optional, default: `50`, max: `200`)
+- `include_queue` (bool, optional, default: `false`)
+- `wait_seconds` (number, optional, default: `0`, capped by `BUS_WAIT_SECONDS_MAX`)
+  - long-poll: block until matching messages appear or timeout
 
 Response:
 - `200 OK` with `{"messages":[...]}`.
 
 Example:
 ```bash
-curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100" \
+curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100&wait_seconds=10" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
+### Queues: POST /bus/queues/claim, /ack, /nack, /renew
+`claim {"queue", "worker", "lease_seconds"?}` leases the oldest pending item
+(`204` when empty). `ack {"queue", "message_id", "worker", "lease_id", "result"?}`
+removes it (`result` becomes an A2A artifact). `nack {..., "requeue": true|false,
+"reason"?}` hands it back or drops it. `renew {"queue", "message_id", "worker",
+"lease_id", "lease_seconds"?}` extends a live lease and returns the new
+`lease_until`; `409` when the lease expired or the worker or lease id does not
+match, `404` when the message is gone. The runner and the bridge renew every
+third of the lease while a task runs; the MCP tool is `renew_work`.
+
 ### GET /health
-Returns basic health status. This endpoint does not require authentication.
+Returns health plus ops gauges. Does not require authentication.
+Always includes `status=ok` when the process is serving.
+
+Fields include: `uptime_seconds`, `messages_retained`, `queue_pending_count`,
+`queue_leased_count`, `jobs_active`, `locks_held`, `locks_durable`, `version`,
+`git_sha`, `process_rss_bytes`.
 
 Example:
 ```bash
 curl "http://127.0.0.1:8091/health"
 ```
+
+### GET /metrics
+JSON metrics for tuning and live debug. Does not require authentication.
+
+- counters: `messages_posted`, `messages_polled`, `queue_claims`, `queue_acks`,
+  `queue_nacks`, `queue_renews`, `orchestration_jobs`, `orchestration_dispatches`,
+  `locks_acquired`, `lock_conflicts`, `locks_renewed`, `locks_released`,
+  `locks_expired`
+- gauges: `messages_in_memory`, `jobs_in_memory`, `leased_messages`, `locks_held`
+- timers: rolling averages `post_latency_ms_avg`, `poll_latency_ms_avg`,
+  `claim_latency_ms_avg`
+
+Example:
+```bash
+curl "http://127.0.0.1:8091/metrics"
+```
+
+### Path locks
+
+Agents lock a repo path before editing it and release it afterwards. Rules:
+
+- `resource` is a repo-relative path. `./src/auth/` and `src/auth` are the same
+  resource. `.` is the repo root. Absolute paths, `..` escapes and glob
+  characters are rejected with `400`.
+- Overlap is by whole path segment: a lock on `src/auth` conflicts with
+  `src/auth/login.py` but not with `src/authz.py`.
+- `repo` scopes a lock (default `default`). The same path in two repos never
+  conflicts.
+- `exclusive` (default) conflicts with every overlapping lock held by another
+  agent. `shared` conflicts only with an overlapping `exclusive` lock.
+- Locks held by the same `agent` never conflict with each other.
+- Every acquire gets a new `fencing_token`, strictly greater than any issued
+  before (seeded from the clock in ms, so it keeps rising across restarts).
+- A lock expires at `expires_at` (Unix seconds) unless renewed. Only the
+  holder, identified by `agent` plus the `lock_id`, can renew or release it.
+- `lock_id` is returned only by acquire. Listings, conflicts and events leave
+  it out, so nobody else can release your lock.
+- Lock events go to channel `locks` as `lock.acquired`, `lock.released` and
+  `lock.expired`, sent by `iac-bus`.
+- With `IAC_BUS_STORE=sqlite` locks and the fencing counter survive a
+  restart (`/health` reports `locks_durable: true`); with the memory store a
+  restart drops them.
+
+#### POST /bus/locks/acquire
+Request: `{"resource", "agent", "repo"?, "mode"?: "exclusive"|"shared",
+"ttl_seconds"? (default 300, capped at 3600), "reason"?, "wait_seconds"?}`.
+
+- `200` `{"lock_id", "fencing_token", "expires_at", "repo", "resource", "mode",
+  "agent", "reason", "acquired_at", "ttl_seconds", "waited_seconds"}`
+- `409` `{"error": "lock conflict", "held_by", "mode", "reason", "expires_at",
+  "conflicting_resource", "conflicts": [...], "waited_seconds"}`
+- `400` invalid request
+
+With `wait_seconds > 0` (capped by `BUS_WAIT_SECONDS_MAX`) the call blocks until
+the conflicting locks are released or expire, then acquires. Waiters are not
+queued in order; the first to retry after a release wins.
+
+```bash
+curl -X POST http://127.0.0.1:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo":"iac-bus","resource":"src/app.py","agent":"agent-a","ttl_seconds":600,"reason":"refactor auth"}'
+```
+
+#### POST /bus/locks/renew
+`{"lock_id", "agent", "ttl_seconds"?}` returns `200` with the lock and its new
+`expires_at` (same fencing token). `404` when the lock is gone or expired,
+`409` when `agent` is not the holder. An expired lock cannot be renewed;
+acquire again to get a new token.
+
+#### POST /bus/locks/release
+`{"lock_id", "agent"}` returns `200 {"success": true, "lock": {...}}`. `404`
+when gone, `409` when `agent` is not the holder.
+
+#### POST /bus/locks/validate
+The write-boundary check for fencing tokens. `{"resource", "fencing_token",
+"repo"?, "agent"?}` returns `200 {"valid": true, ...}` when the token belongs to
+a live lock that covers `resource` (and is held by `agent`, if given), else
+`409 {"valid": false, "reason"}`. Call it right before committing or writing so
+an agent whose lock expired and was taken over is stopped. Writes should hold
+an `exclusive` lock; the response includes the lock's `mode`.
+
+#### GET /bus/locks
+`?resource_prefix=&repo=&agent=` returns `{"locks": [...], "count"}`.
+`resource_prefix` returns every lock overlapping that path, including locks on
+its parent folders.
+
+### MCP adapter (`mcp_server.py`)
+
+A stdio MCP server that wraps the HTTP API for coding agents. Each agent
+session runs its own copy, configured by `BUS_URL`, `BUS_API_TOKEN` and
+`BUS_AGENT_ID`. A random `#<6 hex>` suffix is added to the id per process
+(`BUS_AGENT_SUFFIX=0` disables it) so sessions sharing one config stay
+distinct. The lock scope `BUS_REPO` defaults to the origin remote's repo name.
+
+Tools: `acquire_lock`, `release_lock`, `renew_lock`, `check_lock`,
+`list_locks`, `claim_work`, `ack_work`, `nack_work`, `renew_work`, `post_message`,
+`read_messages`, `request_decision`, `check_decision`, `report_status`.
+Decision and status messages use the `agent_contract.py` envelope
+(`request_decision`, `provide_decision`, `report_status`) on channels
+`decisions` and `status`. At startup the adapter registers a run and sends
+its run token from then on, so the bus derives its identity; it heartbeats
+every 5 minutes, re-registers if the bus restarts, and ends the run (releasing
+its locks) on exit. `BUS_RUN_TOKEN` uses a launcher-minted token instead, and
+`BUS_RUN_REGISTER=0` turns run registration off. `BUS_APPROVAL_FOR` lists the
+steps the server instructions say need an approved `request_decision` first.
+
+`scripts/claude_agents_trial.py` runs real Claude Code sessions through the
+adapter against any bus (`BUS_URL`, `BUS_API_TOKEN`, or a throwaway local
+bus) and checks locks, decisions and the work queue on the bus and on disk.
+
+Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
+`bash scripts/demo_two_agents.sh`. Dependencies: `requirements-mcp.txt`
+(Python 3.10+; not needed by the bus server).
+
+### A2A interop
+
+A2A 1.0, JSON-RPC binding. Design: `docs/A2A_MAPPING.md`. Walkthrough:
+`docs/A2A_DEMO.md`.
+
+### GET /ui
+The status page (`bus_ui.py`): locks, runs, status reports, lock events and
+pending decisions with Approve and Deny buttons. The HTML is public; the page
+asks for a bus token and sends it on every API call it makes.
+
+### Fencing at commit time
+`scripts/install_hooks.sh <repo>` installs `scripts/hooks/pre-commit`. The MCP
+adapter writes its held locks and token to `<git dir>/iac-bus-locks.json`
+(0600); the hook refuses a commit whose staged files are not each covered by
+a live exclusive lock, validated against `POST /bus/locks/validate` at commit
+time. No lock file means a human is committing and the commit is allowed
+(`IAC_BUS_HOOK_STRICT=1` to require one; `IAC_BUS_HOOK_SKIP=1` to bypass once).
+
+#### GET /.well-known/agent-card.json
+The bus's Agent Card. Public (no token), `Cache-Control: public, max-age=300`.
+Its interface URL is `BUS_PUBLIC_URL` + `/a2a` (or the request's own URL).
+Security scheme `runToken`: HTTP Bearer with an iac-bus run token.
+
+#### POST /a2a
+JSON-RPC 2.0 with `A2A-Version: 1.0` (header or query parameter). A missing or
+other version gets `VersionNotSupportedError` (-32009). Run tokens only: no
+token is `401`, the shared token is `403`.
+
+| Method | Behaviour |
+| --- | --- |
+| `SendMessage` | New task: `metadata.skill` `enqueue-work` (default) or `run-job`, `metadata.queue` (default `a2a-inbound`, or the agent's first granted queue), optional `metadata.lockPaths`. With `taskId`: answers the task's open question (posted as `provide_decision`), or passes a note to the worker on `a2a.task.<id>`. Blocks up to `BUS_WAIT_SECONDS_MAX` unless `configuration.returnImmediately` |
+| `GetTask` | The caller's task; `historyLength` trims history |
+| `ListTasks` | The caller's tasks, newest status first: `contextId`, `status`, `statusTimestampAfter`, `pageSize` (1-100), `pageToken`, `historyLength` (default 0), `includeArtifacts` |
+| `CancelTask` | Withdraws an unclaimed item or skips the job step, posts `cancel_task` for a worker; `TaskNotCancelable` (-32002) when already terminal |
+
+Other A2A methods return `UnsupportedOperation` (-32004),
+`PushNotificationNotSupported` (-32003) or `ExtendedAgentCardNotConfigured`
+(-32007). A grant refusal is -32000 with reason `PERMISSION_DENIED`.
+
+State mapping: queue item pending or step pending is `SUBMITTED`; leased or
+running is `WORKING`; an open `request_decision` tied to the work item is
+`INPUT_REQUIRED`; ack is `COMPLETED` (the ack `result` becomes an artifact);
+nack without requeue, step failed or timed out is `FAILED`; `CancelTask` is
+`CANCELED`.
+
+#### POST /agents/a2a/register
+Shared token only. `{"card_url" | "card", "handle"?, "grants"?, "credential_env"?, "run_ttl_seconds"?}`.
+`card_url` is fetched with a guard: https only, public addresses only, no
+redirects, 256 KB max, unless the host is in `BUS_A2A_ALLOW_HOSTS`.
+`grants` are deny-by-default allowlists (`skills`, `queues`, `channels`,
+`lock_paths`; fnmatch patterns). `credential_env` is the NAME of the env var
+on the bridge host that holds the token for calling the agent. Returns the
+agent (card summary, grants, `outbound_queue` = `a2a.<handle>`), its run and
+`run_token` (once). Registering the same handle again updates it (`200`).
+
+#### GET /agents/a2a
+Registered A2A agents with card summary, grants, `credential_env` name and
+`outbound_queue`. Not for restricted runs.
+
+#### Grants on any run
+`POST /agents/register` also accepts `grants`. A restricted run may only post
+to and read granted channels (and must name one), claim, ack and nack granted
+queues, and lock under granted paths. It cannot post `orchestration.*`
+messages or list runs or A2A agents.
+
+#### Agent runner (`scripts/agent_runner.py`)
+Wakes agents for queued work. For each item it claims (`--queue`, repeatable)
+it registers a fresh run for the agent, writes an MCP config with that run
+token and `BUS_WORK_MESSAGE_ID`, runs `claude -p` in `--workdir`, then acks
+with Claude's reply as `result` or nacks without requeue with the reason, and
+ends the agent's run (releasing its locks). The agent never receives the
+shared token. Options: `--model`, `--allow` (extra tool permissions),
+`--agent-timeout`, `--lease` (renewed while the agent runs), `--once`, `--max-items`.
+
+#### Outbound bridge (`scripts/a2a_bridge.py`)
+Claims items from every registered agent's `outbound_queue`, locks the item's
+`lock_paths`, sends `SendMessage` to the agent's JSON-RPC endpoint (token from
+`credential_env`), relays `INPUT_REQUIRED` / `AUTH_REQUIRED` as a bus
+`request_decision`, then acks with the artifacts, or nacks with the reason. It
+posts `report_result` on `a2a.<handle>`, and renews the item's lease while
+the remote task runs.
+
+### POST /agents/register
+Registers an agent and starts a run for it. Needs the shared token (or an
+open bus); a run token gets `403`.
+
+Request: `{"handle", "role"?, "purpose"?, "medium"?: web|slack|ide|api|automation|other,
+"session_id"?, "run_ttl_seconds"? (default 3600, capped at 86400)}`. `handle` is
+1-128 characters of letters, digits and `._:@/+-`.
+
+`201`: `{"success": true, "agent": {...}, "run": {...}, "actor", "run_token"}`.
+The agent record and the run go through the configured store (both survive a
+restart with SQLite).
+
+```bash
+curl -s -X POST http://127.0.0.1:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"handle":"claude.iac-bus.a","role":"coding-agent","medium":"ide"}'
+```
+
+### GET /agents/whoami
+`{"auth": "run"|"shared"|"open", "actor", "run"}` for the caller.
+
+### POST /agents/heartbeat
+With a run token: extends the run's expiry and returns it. Any request with
+the run token extends it too.
+
+### GET /agents/runs
+`?include_ended=true` to include ended and expired runs. Never returns tokens
+or hashes.
+
+### POST /agents/runs/end
+With a run token: ends the caller's own run. With the shared token: ends the
+run named by `{"run_id"}`. The token stops working at once and the run's
+locks are released (`lock.released` events). Returns `locks_released`.
 
 ## Configuration
 
@@ -133,7 +403,21 @@ curl "http://127.0.0.1:8091/health"
 | `BUS_API_TOKEN` | empty | Bearer token |
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for long-poll and lock `wait_seconds` |
+| `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
+| `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
+| `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use when `run_ttl_seconds` is omitted |
+| `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
+| `BUS_REQUIRE_RUN_TOKEN` | off | When on, `/bus/*` refuses the shared token; agents must use run tokens |
+| `BUS_PUBLIC_URL` | request URL | Base URL in the A2A Agent Card |
+| `BUS_A2A_NAME` | `iac-bus` | Agent Card name |
+| `BUS_A2A_ORG` | empty | Agent Card provider organization |
+| `BUS_A2A_ALLOW_HOSTS` | empty | Comma list of hosts allowed for http or private-address card URLs |
 | `BUS_LOG_LEVEL` | `INFO` | Log level |
+| `BUS_VERSION` | `0.1.0` | Version string in `/health` |
+| `BUS_GIT_SHA` | empty | Optional git sha (`GITHUB_SHA` fallback) |
+| `IAC_BUS_STORE` | `memory` | Storage backend: `memory` or `sqlite` |
+| `IAC_BUS_DB` | `iac-bus.db` | SQLite file path when `IAC_BUS_STORE=sqlite` |
 
 ## Runtime Behavior
 - Messages are pruned on insert and on read.
@@ -142,6 +426,10 @@ curl "http://127.0.0.1:8091/health"
 - `limit` is capped at `200`.
 - `since_id` returns messages strictly after the matching ID if found; if the
   ID is not present, all messages for the query are returned.
+- `wait_seconds` long-polls until matching messages appear or the timeout
+  elapses (capped by `BUS_WAIT_SECONDS_MAX`).
+- Structured request logs include `request_id`, `method`, `path`, `status`, and
+  `duration_ms` (controlled by `BUS_LOG_LEVEL`).
 
 ## Deployment
 
@@ -189,7 +477,9 @@ The provisioning script prints the new VM host and can optionally trigger
 deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
 
 ## Operations
-- Logs are emitted to stdout using the configured `BUS_LOG_LEVEL`.
+- Structured request logs (`request_id`, `method`, `path`, `status`,
+  `duration_ms`) are emitted at INFO; bus/queue details at DEBUG via
+  `BUS_LOG_LEVEL`.
 - The systemd unit restarts on failure.
 - The service runs as `root` by default in the provided unit file.
 
@@ -197,12 +487,17 @@ deployment/hot-reload setup by setting `OCI_RUN_DEPLOY_AFTER_CREATE=true`.
 - Dev service unit: `systemd/iac-bus-dev.service`
 - Hot-reload runner: `scripts/run-dev-hot-reload.sh`
 - Deployment helper: `scripts/deploy-dev-vm.sh`
-- CI/CD workflow: `.github/workflows/dev-deploy.yml`
+- CI/CD workflow: `.github/workflows/dev-deploy.yml` (test then deploy on
+  push to `dev`)
 
-Recommended log streaming command on the VM:
+Live-debug on the VM:
 ```bash
 sudo journalctl -u iac-bus-dev.service -f
+curl http://127.0.0.1:8091/health
+curl http://127.0.0.1:8091/metrics
 ```
+
+`BUS_LOG_LEVEL=DEBUG` is the default for `iac-bus-dev.service`.
 
 ## Planning Artifacts
 The repository includes a planning/scaffolding set for ACP evolution:
@@ -314,10 +609,22 @@ python3 -m venv venv
 - Empty message list: verify the `channel`, `since_id`, and retention settings.
 
 ## Limitations
-- Messages are stored only in memory; restarts clear all data.
-- If you run multiple processes (for example, gunicorn with multiple workers),
-  each process maintains its own message list.
-- There is no built-in persistence or fine-grained access control.
+- By default messages are stored only in memory; restarts clear all data.
+  Set `IAC_BUS_STORE=sqlite` (and `IAC_BUS_DB`) to persist messages, queue
+  leases, agent registrations, path locks, runs and A2A tasks across
+  restarts. Orchestration job state is in memory in both modes, so an A2A
+  `run-job` task stops following its step after a restart.
+- If you run multiple processes (for example, gunicorn with multiple workers)
+  with the default memory store, each process maintains its own message
+  list. With the SQLite store, workers share the database file, but the
+  long-poll wake-up is per process (a waiting poll re-checks every 250 ms).
+- There is no fine-grained access control. Callers using the shared token
+  name themselves, so lock ownership is only as strong as that name; callers
+  using run tokens cannot claim another identity. Turn on
+  `BUS_REQUIRE_RUN_TOKEN` to require run tokens on `/bus/*`. Roles and grants
+  per run are Track B in `docs/IDENTITY-AND-AUTHORITY.md`.
+- Path locks are per process. Run a single process (the default
+  `python server.py`) when agents rely on locks.
 
 ## Roadmap
 All items below are **Planned** unless explicitly marked otherwise.

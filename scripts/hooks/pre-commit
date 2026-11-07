@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""iac-bus pre-commit hook: every staged file must be covered by a live exclusive lock.
+
+Reads <git dir>/iac-bus-locks.json, written by the iac-bus MCP adapter for this
+session, and asks the bus to validate each lock's fencing token right before
+the commit. A commit is refused when a staged file has no covering lock, the
+lock is shared, or the token is no longer live (released, expired, taken over).
+
+Without a lock file the commit is allowed (a human is committing), unless
+IAC_BUS_HOOK_STRICT=1. Set IAC_BUS_HOOK_SKIP=1 to bypass once. Stdlib only.
+Install with scripts/install_hooks.sh.
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def covers(lock_resource, path):
+    if lock_resource == ".":
+        return True
+    return path == lock_resource or path.startswith(lock_resource.rstrip("/") + "/")
+
+
+def main():
+    if os.environ.get("IAC_BUS_HOOK_SKIP", "").strip().lower() in ("1", "true", "yes"):
+        return 0
+    strict = os.environ.get("IAC_BUS_HOOK_STRICT", "").strip().lower() in ("1", "true", "yes")
+    git_dir = git("rev-parse", "--git-dir")
+    lock_file = os.path.join(git_dir, "iac-bus-locks.json")
+    if not os.path.exists(lock_file):
+        if strict:
+            print("iac-bus: no lock file for this checkout (IAC_BUS_HOOK_STRICT=1); refusing commit", file=sys.stderr)
+            return 1
+        return 0
+    with open(lock_file, encoding="utf-8") as fh:
+        state = json.load(fh)
+    staged = [line for line in git("diff", "--cached", "--name-only", "--diff-filter=ACMRD").splitlines() if line]
+    if not staged:
+        return 0
+    problems = []
+    checked = 0
+    for path in staged:
+        covering = [lock for lock in state.get("locks", []) if covers(lock["resource"], path)]
+        if not covering:
+            problems.append(f"{path}: no lock held by {state.get('agent')} covers it (acquire_lock first)")
+            continue
+        exclusive = [lock for lock in covering if lock.get("mode") == "exclusive"]
+        if not exclusive:
+            problems.append(f"{path}: only a shared lock; writes need an exclusive lock")
+            continue
+        lock = max(exclusive, key=lambda lock: lock["fencing_token"])
+        body = json.dumps({"repo": state["repo"], "resource": path, "fencing_token": lock["fencing_token"],
+                           "agent": state["agent"]}).encode()
+        req = urllib.request.Request(state["bus_url"].rstrip("/") + "/bus/locks/validate", data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "Authorization": "Bearer " + state.get("token", "")})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                json.load(resp)
+            checked += 1
+        except urllib.error.HTTPError as exc:
+            try:
+                reason = json.load(exc).get("reason") or exc.reason
+            except Exception:  # noqa: BLE001
+                reason = exc.reason
+            problems.append(f"{path}: lock on {lock['resource']} is not live ({reason}); acquire_lock again and re-read the file")
+        except (urllib.error.URLError, OSError) as exc:
+            problems.append(f"{path}: cannot reach the bus to validate the lock ({exc})")
+    if problems:
+        print("iac-bus: commit refused", file=sys.stderr)
+        for line in problems:
+            print("  " + line, file=sys.stderr)
+        return 1
+    print(f"iac-bus: {checked} staged file(s) covered by live locks held by {state.get('agent')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,7 @@
+# MCP adapter (mcp_server.py). Install on each machine that runs coding agents:
+#   pip install -r requirements-mcp.txt
+# The bus server itself does not need these. CI installs them for the adapter
+# tests; they are kept out of requirements-dev.txt because the dev VM installs
+# that file and the MCP SDK needs Python >= 3.10.
+mcp>=2.3,<3
+requests>=2.25.0
