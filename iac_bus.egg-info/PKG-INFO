@@ -1,0 +1,632 @@
+Metadata-Version: 2.4
+Name: iac-bus
+Version: 0.2.0.dev0
+Summary: Coordination bus for coding agents: path locks with fencing, work queues, run identity, approvals, MCP tools and A2A.
+Project-URL: Homepage, https://github.com/lehelkovach/iac-bus
+Project-URL: Documentation, https://github.com/lehelkovach/iac-bus/blob/dev/DOCUMENTATION.md
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: flask>=2.0.0
+Requires-Dist: requests>=2.25.0
+Provides-Extra: mcp
+Requires-Dist: mcp<3,>=2.3; extra == "mcp"
+Provides-Extra: serve
+Requires-Dist: gunicorn>=20.0.0; extra == "serve"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: jsonschema; extra == "dev"
+Requires-Dist: watchdog; extra == "dev"
+Requires-Dist: mcp<3,>=2.3; extra == "dev"
+Requires-Dist: a2a-sdk<2,>=1.3; extra == "dev"
+
+# Inter-Agent Communication Bus (IAC Bus)
+
+Lightweight message bus for coordinating multiple agents over HTTP.
+
+> **Ports differ between this README and the live box.** `BUS_PORT` defaults to
+> **8091**, which is what the examples below and the dev deploy use. The running
+> production VM listens on **8101** (`.github/workflows/prod-deploy.yml` sets
+> `PROD_BUS_PORT: "8101"`; see also `AGENTS.md` and `docs/OCI-LIVE.md`). Against
+> the live host, substitute 8101 — e.g. `http://129.153.192.75:8101/health`.
+>
+> **The public hostname does not resolve yet.** `iac-bus.knowshowgo.com` is
+> NXDOMAIN, re-checked 2026-09-23; the A record to `129.153.192.75` has never
+> been created (tracked as blocker B-002 in `docs/AGENT_TASKS.md`). Until it
+> exists, use the IP and port directly, and treat any doc that prints the
+> hostname as aspirational.
+
+## Coordinating coding agents
+
+Several coding agents (Claude Code sessions, Cursor agents, any MCP client) can
+work in one repo through the bus without overwriting each other.
+
+1. Run the bus: `BUS_API_TOKEN=... python server.py`, or use the shared host.
+2. Give every agent session the MCP adapter, `mcp_server.py`, with its own
+   `BUS_AGENT_ID`. [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md) shows how to register
+   it in Claude Code for two sessions.
+3. The agents get these tools:
+
+   | Tool | Use |
+   | --- | --- |
+   | `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
+   | `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
+   | `list_locks` | who is editing what |
+   | `claim_work` / `ack_work` / `nack_work` | take queued tasks under a lease |
+   | `post_message` / `read_messages` | talk to other agents and humans |
+   | `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
+   | `report_status` | publish state and a one-line summary |
+
+See it work, with a throwaway bus and two real MCP server processes:
+
+```bash
+pip install -r requirements.txt -r requirements-mcp.txt
+bash scripts/demo_two_agents.sh
+```
+
+```
+[A] acquire_lock("src/app.py", reason="refactor login flow", ttl_seconds=120)
+[A]   -> acquired. fencing_token=1793669595760, expires in 120s
+[B] acquire_lock("src/app.py")
+[B]   -> refused (HTTP 409): held by agent-a#2ef0f0 (exclusive, "refactor login flow"), expires in 120s
+[B] acquire_lock("src/app.py", wait_seconds=15)   ... blocking until the path frees up
+[A] release_lock("src/app.py") -> released ['src/app.py']
+[B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
+```
+
+To have work picked up without anyone starting an agent, run
+`scripts/agent_runner.py --queue <queue> --workdir <repo>`: it claims each item,
+starts a Claude Code session with its own run token, and acks the item with
+Claude's reply ([`docs/RUNNER_DEMO.md`](docs/RUNNER_DEMO.md) shows an A2A task
+done this way against the OCI bus).
+
+Try it with real Claude Code sessions, whose prompts never mention the bus:
+`python scripts/claude_agents_trial.py` (needs the `claude` CLI; prints a
+pass/fail report and the model cost).
+
+Locks reduce collisions between agents. Git branches, CI and review stay the
+source of truth for code. Each adapter registers a run at startup, so the bus
+derives every agent's identity from its run token and one agent cannot release
+another's locks. Set `BUS_REQUIRE_RUN_TOKEN=1` to stop shared-token callers
+from naming themselves on `/bus/*`.
+
+## A2A interop
+
+The bus speaks [A2A 1.0](https://a2a-protocol.org) in both directions, so any
+A2A agent can join supervised work.
+
+- **Discovery.** `GET /.well-known/agent-card.json` is the bus's public Agent
+  Card. It offers two skills: `enqueue-work` (a task becomes a work item our
+  coding agents claim) and `run-job` (a one-step orchestration job).
+- **Incoming tasks.** `POST /a2a` (JSON-RPC, `A2A-Version: 1.0`) implements
+  `SendMessage`, `GetTask`, `ListTasks` and `CancelTask`. Task state follows
+  the work on the bus. A worker's `request_decision` shows up as
+  `TASK_STATE_INPUT_REQUIRED`, and the caller's reply goes back as the
+  decision. The worker's ack `result` becomes the task's artifact.
+- **Registering an agent.** `POST /agents/a2a/register` stores an agent's
+  card (fetched over https, or inline), grants it deny-by-default allowlists
+  of skills, queues, channels and lock paths, and mints its run token. `/a2a`
+  never accepts the shared token.
+- **Outgoing work.** `scripts/a2a_bridge.py` delivers work queued for a
+  registered agent: it locks the declared paths, sends the task, relays the
+  agent's questions as bus decisions, and acks with the agent's artifacts.
+
+Walkthrough with real output: [`docs/A2A_DEMO.md`](docs/A2A_DEMO.md) (or run
+`bash scripts/a2a_curl_demo.sh`). Design and decisions:
+[`docs/A2A_MAPPING.md`](docs/A2A_MAPPING.md).
+
+## Features
+- Simple REST endpoints for posting and polling messages
+- In-memory retention with size + time limits
+- Queue-style work leasing (claim/ack/nack)
+- Repo path locks with fencing tokens (acquire/renew/release/validate)
+- Optional bearer-token auth
+- Systemd service deployment
+
+## Endpoints
+
+### Post message
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/messages \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"ops","sender":"agent-a","message":"ready"}'
+```
+
+### Poll messages
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Use `since_id` to avoid re-reading older messages:
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Long-poll with `wait_seconds` (capped by `BUS_WAIT_SECONDS_MAX`, default 30):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>&wait_seconds=10" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Queue messages are excluded from polling by default. To include them:
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?include_queue=true" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+### Claim from queue (work leasing)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/claim \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","lease_seconds":60}'
+```
+
+### Ack queue message
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/ack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>"}'
+```
+
+### Nack queue message (requeue)
+```bash
+curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue":"work","worker":"agent-a","message_id":"<ID>","lease_id":"<LEASE_ID>","requeue":true}'
+```
+
+### Health check
+```bash
+curl http://<BUS_IP>:8091/health
+```
+
+Returns `status=ok` plus ops gauges: `uptime_seconds`, `messages_retained`,
+`queue_pending_count`, `queue_leased_count`, `jobs_active`, `version`,
+`git_sha` (when set), and `process_rss_bytes` when available.
+
+### Metrics (JSON)
+```bash
+curl http://<BUS_IP>:8091/metrics
+```
+
+Counters (`messages_posted`, `messages_polled`, `queue_claims`/`acks`/`nacks`,
+`orchestration_jobs`/`dispatches`), gauges (`messages_in_memory`,
+`jobs_in_memory`, `leased_messages`), and rolling avg timers
+(`post_latency_ms_avg`, `poll_latency_ms_avg`, `claim_latency_ms_avg`).
+`/health` and `/metrics` do not require auth.
+
+### Path locks
+Lock a repo path before editing it; release it afterwards. Folder locks cover
+everything below them, overlap is by whole path segment, and every acquire
+gets a rising `fencing_token`. Full rules: `DOCUMENTATION.md` → Path locks.
+```bash
+# acquire (200 with lock_id + fencing_token, or 409 with held_by/mode/reason/expires_at)
+curl -X POST http://<BUS_IP>:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo":"iac-bus","resource":"src/app.py","agent":"agent-a","ttl_seconds":600,"reason":"refactor","wait_seconds":0}'
+# renew / release (holder only)
+curl -X POST http://<BUS_IP>:8091/bus/locks/renew   -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a","ttl_seconds":600}'
+curl -X POST http://<BUS_IP>:8091/bus/locks/release -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a"}'
+# is my fencing token still live for this path? (200 / 409)
+curl -X POST http://<BUS_IP>:8091/bus/locks/validate -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"repo":"iac-bus","resource":"src/app.py","fencing_token":1793669138519}'
+# who holds what under a path
+curl "http://<BUS_IP>:8091/bus/locks?repo=iac-bus&resource_prefix=src/" -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+Lock events are posted to channel `locks` (`lock.acquired`, `lock.released`, `lock.expired`).
+
+### Register agent and get a run token
+```bash
+curl -X POST http://<BUS_IP>:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"handle":"agent:cursor.iac-bus.0@web","role":"worker"}'
+# -> {"agent": {...}, "run": {...}, "actor": "agent:cursor.iac-bus.0@web#3f2a1c", "run_token": "iacrun_..."}
+```
+
+Send `Authorization: Bearer <run_token>` on later requests and the bus uses the
+run's `actor` as your sender, worker and lock holder, whatever names the body
+contains. `GET /agents/whoami`, `POST /agents/heartbeat`, `GET /agents/runs`
+and `POST /agents/runs/end` manage runs. The shared token keeps working;
+`BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` require run tokens. Agent records go
+and runs go through the configured store (durable with `IAC_BUS_STORE=sqlite`).
+
+## Environment
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BUS_HOST` | `0.0.0.0` | Bind address |
+| `BUS_PORT` | `8091` | Listen port |
+| `BUS_API_TOKEN` | empty | Bearer token |
+| `BUS_MAX_MESSAGES` | `500` | Max retained messages |
+| `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
+| `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll and lock waits |
+| `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
+| `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
+| `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use |
+| `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
+| `BUS_REQUIRE_RUN_TOKEN` | off | Require run tokens on `/bus/*` |
+| `BUS_PUBLIC_URL` | request URL | Base URL advertised in the A2A Agent Card |
+| `BUS_A2A_NAME` / `BUS_A2A_ORG` | `iac-bus` / empty | Agent Card name and provider |
+| `BUS_A2A_ALLOW_HOSTS` | empty | Hosts allowed for http or private-address card URLs (development) |
+| `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
+| `BUS_VERSION` | `0.1.0` | Reported in `/health` |
+| `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |
+| `IAC_BUS_STORE` | `memory` | Storage backend: `memory` (state lost on restart) or `sqlite` |
+| `IAC_BUS_DB` | `iac-bus.db` | SQLite file path when `IAC_BUS_STORE=sqlite` (parent dir is created) |
+
+With `IAC_BUS_STORE=sqlite`, messages, queue leases and agent registrations
+survive a restart; orchestration job state and `/metrics` counters stay
+in-process. The HTTP API is identical in both modes.
+
+## Local Run
+```bash
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+```
+
+## Deploy (systemd)
+```bash
+sudo ./deploy.sh
+sudo systemctl status iac-bus.service
+```
+
+The deploy script installs to `/opt/iac-bus` and creates
+`/etc/iac-bus/iac-bus.env` for configuration.
+
+## OCI Deployment
+
+See `OCI_DEPLOYMENT.md` for VM provisioning and setup steps.
+
+## Dev VM CI/CD (Oracle Cloud)
+
+For autonomous dev deployments with hot reload and debug logs, use:
+
+- `scripts/deploy-dev-vm.sh` (manual/local deployment using injected secrets)
+- `.github/workflows/dev-deploy.yml` (test + deploy on push)
+- `systemd/iac-bus-dev.service` + `scripts/run-dev-hot-reload.sh` (live reload)
+
+Expected secret/environment inputs:
+
+- `KSG_DEV_VM_HOST`
+- `KSG_DEV_VM_USER`
+- `KSG_DEV_VM_PORT` (optional, default `22`)
+- `KSG_DEV_VM_APP_DIR` (optional, default `/opt/iac-bus-dev`)
+- `KSG_DEV_VM_KEY` (private key content or file path)
+- `BUS_API_TOKEN` (optional, for protected dev API)
+
+Manual deploy:
+```bash
+chmod +x scripts/deploy-dev-vm.sh
+./scripts/deploy-dev-vm.sh
+```
+
+Live debugging on dev VM:
+```bash
+# structured request logs + debug bus events
+ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+
+# ops endpoints (port 8091 on the VM)
+curl http://<VM_IP>:8091/health
+curl http://<VM_IP>:8091/metrics
+```
+
+Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
+and the service auto-restarts on file changes via `watchmedo`. Structured request
+logs include `request_id`, `method`, `path`, `status`, and `duration_ms`.
+
+### Provision a brand-new OCI VM using `OCI_*` secrets
+
+Use the workflow `.github/workflows/oci-provision-dev-vm.yml` (manual
+workflow_dispatch) or run locally:
+
+```bash
+python3 -m pip install oci
+python3 scripts/provision-oci-dev-vm.py
+```
+
+Required `OCI_*` secrets:
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `OCI_SUBNET_OCID`
+- `OCI_IMAGE_OCID`
+- `OCI_SSH_PUBLIC_KEY`
+- one of:
+  - `OCI_PRIVATE_KEY`
+  - `OCI_PRIVATE_KEY_B64`
+
+Optional:
+- `OCI_AVAILABILITY_DOMAIN`
+- `OCI_SHAPE`
+- `OCI_VM_DISPLAY_NAME`
+- `OCI_BOOT_VOLUME_SIZE_GBS`
+- `OCI_RUN_DEPLOY_AFTER_CREATE=true` (will trigger `scripts/deploy-dev-vm.sh`)
+
+## Protocol Schema
+
+JSON schema definitions for the message protocol and queue endpoints live in
+`schemas/iac-bus.schema.json`.
+
+Protocol v1.1 adds orchestration message types:
+- `orchestration.job`
+- `orchestration.step.assign`
+- `orchestration.step.status`
+
+## Universal Agent Contract
+
+Define shared agent behavior, actions, states, and control inputs with a
+portable envelope plus adapter interfaces:
+
+- Schema: `schemas/agent-contract.schema.json`
+- Python interface + marshalling helpers: `agent_contract.py`
+
+### Oversight / adjudication flow
+
+Subordinate requests a decision from the supervisor (with options):
+```json
+{
+  "kind": "control",
+  "action": "request_decision",
+  "from": "agent-2",
+  "to": "supervisor-1",
+  "conversation_id": "conv-99",
+  "state": "waiting_input",
+  "payload": {
+    "prompt": "Proceed with deploy?",
+    "choices": [
+      {"id": "continue", "label": "Continue"},
+      {"id": "pause", "label": "Pause and review"},
+      {"id": "abort", "label": "Abort"}
+    ],
+    "requires_approval": true,
+    "escalation_chain": ["supervisor-1", "user"]
+  }
+}
+```
+
+Supervisor responds (allowing the agent to continue):
+```json
+{
+  "kind": "response",
+  "action": "provide_decision",
+  "from": "supervisor-1",
+  "to": "agent-2",
+  "conversation_id": "conv-99",
+  "payload": {
+    "choice_id": "continue",
+    "approved": true,
+    "notes": "Proceed"
+  }
+}
+```
+
+## Orchestration Jobs (dependencies + sync)
+
+Define job/step graphs with dependencies, time gates, and barrier sync points:
+
+- Schema: `schemas/orchestration.schema.json`
+- Python helper (ready-step evaluation): `orchestration.py`
+
+Example:
+```json
+{
+  "job_id": "job-1",
+  "name": "build-service",
+  "steps": [
+    {"id": "design"},
+    {"id": "impl", "depends_on": [{"step_id": "design"}]},
+    {"id": "tests", "depends_on": [{"step_id": "impl"}]},
+    {"id": "review", "wait_for": ["sync-1"]}
+  ],
+  "barriers": [
+    {"id": "sync-1", "requires": ["design", "impl", "tests"], "mode": "all_completed"}
+  ]
+}
+```
+
+## Agent Collaboration Guide (Master / Slave / Sibling)
+
+Use this section as the quick operational playbook for any new agent joining an
+active multi-agent task.
+
+Terminology note:
+- "Master" == supervisor/orchestrator agent.
+- "Slave" == subordinate worker agent (execution-focused child).
+- "Sibling" == another worker under the same master.
+
+### Role responsibilities
+
+| Role | Primary responsibilities | Should publish |
+| --- | --- | --- |
+| Master | assign tasks, track blockers, resolve dependencies, approve handoffs | `request`, `decision`, `handoff`, `done` |
+| Slave/Subordinate | execute scoped tasks, report progress, raise blockers, hand off finished work | `progress`, `blocker`, `handoff`, `done`, `error` |
+| Sibling worker | same as subordinate, plus explicit dependency notifications to peer workers via bus | `response`, `progress`, `done`, `blocker` |
+
+### Required message shape (ACP v2 style)
+
+At minimum, agents should send:
+- `channel`
+- `agent`
+- `type`
+- `message`
+
+Optional:
+- `ref`
+- `metadata`
+
+Reference: `docs/ACP_PROTOCOL_V2.md`
+
+### Channel conventions
+
+- `ops`
+- `project.<project-name>`
+- `repo.<repo-name>`
+- `task.<task-id>`
+- `agent.<agent-id>`
+- `handoff`
+- `blockers`
+
+### New-agent startup checklist
+
+1. Register identity (or resolve existing identity) and determine role:
+   - master / slave / sibling.
+2. Set a stable `agent` handle with medium suffix:
+   - example: `agent:cursor.iac-bus.0@web`
+3. Subscribe/poll required channels for assigned scope:
+   - at minimum task channel + `blockers` + `handoff`.
+4. Send initial heartbeat/progress message:
+   - announce active state and current task focus.
+5. Use `since_id` (and when available `wait_seconds`) to avoid missed messages.
+
+### Master delegation pattern
+
+1. Master posts task assignment to `task.<task-id>` (`type=request`).
+2. Slave accepts and posts `progress`.
+3. If blocked, slave posts `blocker` to `blockers` (with dependency details).
+4. Master either:
+   - assigns dependency work to a sibling, or
+   - posts `decision` with unblock instructions.
+5. Slave resumes, posts `done`, then posts `handoff` with tests/artifacts/next.
+
+### Sibling dependency handoff pattern (IPC-like)
+
+When worker A needs worker B:
+
+1. A posts `blocker` with `metadata.needs`.
+2. Master assigns B via `request`.
+3. B posts `done` on dependency task channel.
+4. A observes completion (poll channel with `since_id`), resumes, posts `progress`.
+
+This pattern provides OS-like "wait until dependency completes" behavior without
+tight coupling between workers.
+
+### Minimal practical examples
+
+Master assignment:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"task.login-flow","agent":"agent:cursor.iac-bus.0@web","type":"request","message":"Implement login validation","metadata":{"owner":"agent:cursor.iac-bus.0-1@web"}}'
+```
+
+Slave reports blocker:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"blockers","agent":"agent:cursor.iac-bus.0-1@web","type":"blocker","message":"Waiting for API contract update","metadata":{"needs":["OpenAPI v3 response schema"],"task":"task.login-flow"}}'
+```
+
+Sibling completion notice:
+```bash
+curl -X POST "http://<BUS_IP>:8091/bus/messages" \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"task.api-contract","agent":"agent:cursor.iac-bus.0-2@web","type":"done","message":"API contract update completed","metadata":{"artifacts":["openapi.yaml"]}}'
+```
+
+Wait/read loop (poll with cursor):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=task.api-contract&since_id=<LAST_ID>&limit=100" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+## Hotfix (no OCI credentials)
+
+Apply a hotfix directly on a VM by pulling a tarball from GitHub:
+```bash
+sudo ./scripts/hotfix-pull.sh
+```
+
+Apply to a remote VM over SSH (from your local machine):
+```bash
+./scripts/hotfix-remote.sh ubuntu@<IP> ~/.ssh/your_key
+```
+
+Deploy and configure the Oracle dev VM with hot-reload service:
+```bash
+./scripts/deploy-dev-vm.sh
+```
+
+## Spawn Cursor Agents + Bus Announce
+
+This script spawns Cursor Cloud Agents and announces each agent on the bus.
+
+```bash
+export CURSOR_API_KEY="key_xxx..."
+python3 scripts/spawn-cursor-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --count 2 \
+  --payload '{"name":"agent-a"}' \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN"
+```
+
+Notes:
+- Cursor uses **Basic Auth** with the key as the username and a blank password.
+- `--payload` is passed directly to the Cursor API and can include custom fields.
+
+## Handoff: Terminate Cursor Agents
+
+Terminate agents explicitly by ID:
+```bash
+export CURSOR_API_KEY="key_xxx..."
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids "agent-id-1,agent-id-2"
+```
+
+Or extract IDs from a handoff notes file:
+```bash
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --agent-ids-file /path/to/redroid-cloud-phone_notes.md
+```
+
+Or terminate agents announced on the bus:
+```bash
+python3 scripts/handoff-terminate-agents.py \
+  --cursor-endpoint "https://api.cursor.com/v0/agents" \
+  --bus-url "http://127.0.0.1:8091" \
+  --bus-token "$BUS_API_TOKEN"
+```
+
+## Topology Roadmap (Supervisor/Subordinate)
+
+The current bus is a simple channel-based relay. To support supervisor and
+subordinate agent topologies, the following functionality should be added:
+
+- **Identity & presence**: register agents, heartbeat TTL, and last-seen status.
+- **Roles & hierarchy**: supervisor/subordinate roles with parent-child links.
+- **Directed routing**: direct messages to agent IDs (not only channels).
+- **Group addressing**: supervisor can broadcast to all descendants.
+- **Work leasing**: supervisor assigns tasks with lease + ack/complete flow.
+- **Conversation threads**: correlate messages by `conversation_id`.
+- **Access control**: role-based permissions and channel ACLs.
+- **Durability**: optional persistent storage (SQLite/Postgres/Redis).
+- **Streaming**: SSE or WebSocket long-poll for low-latency updates.
+- **Rate limits**: per-agent and per-channel throttling.
+
+## Planning and Scaffolding
+
+Implementation planning and execution scaffolding are documented in:
+
+- [docs/ACP_PROTOCOL_V2.md](docs/ACP_PROTOCOL_V2.md) - strict ACP v2 draft protocol contract with identity, message/channel conventions, API semantics, and state diagrams.
+- [docs/sql/ACP_V2_SCHEMA.sql](docs/sql/ACP_V2_SCHEMA.sql) - draft Postgres schema for durable agent/message history and coordination state.
+- [prompts/REPO_AGENT_TAKEOVER.prompt.md](prompts/REPO_AGENT_TAKEOVER.prompt.md) - first-read takeover prompt for any new agent continuing work.
+- [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md) - canonical active task queue for takeover agents.
+- [docs/FULL_DEV_PLAN.md](docs/FULL_DEV_PLAN.md) - canonical full development plan assimilating merged PR intent and ACP planning.
+- [docs/ACP_DEV_PLAN.md](docs/ACP_DEV_PLAN.md) - consolidated MVP-first development plan with OSS architecture references.
+- [docs/ROADMAP.md](docs/ROADMAP.md) - versioned delivery roadmap from easiest to most complex.
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - TDD/BDD cascading test strategy and completion gates.
+- [prompts/README.md](prompts/README.md) - agent prompt file conventions and usage.

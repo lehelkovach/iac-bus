@@ -142,6 +142,16 @@ curl "http://127.0.0.1:8091/bus/messages?channel=ops&limit=100&wait_seconds=10" 
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
+### Queues: POST /bus/queues/claim, /ack, /nack, /renew
+`claim {"queue", "worker", "lease_seconds"?}` leases the oldest pending item
+(`204` when empty). `ack {"queue", "message_id", "worker", "lease_id", "result"?}`
+removes it (`result` becomes an A2A artifact). `nack {..., "requeue": true|false,
+"reason"?}` hands it back or drops it. `renew {"queue", "message_id", "worker",
+"lease_id", "lease_seconds"?}` extends a live lease and returns the new
+`lease_until`; `409` when the lease expired or the worker or lease id does not
+match, `404` when the message is gone. The runner and the bridge renew every
+third of the lease while a task runs; the MCP tool is `renew_work`.
+
 ### GET /health
 Returns health plus ops gauges. Does not require authentication.
 Always includes `status=ok` when the process is serving.
@@ -159,7 +169,7 @@ curl "http://127.0.0.1:8091/health"
 JSON metrics for tuning and live debug. Does not require authentication.
 
 - counters: `messages_posted`, `messages_polled`, `queue_claims`, `queue_acks`,
-  `queue_nacks`, `orchestration_jobs`, `orchestration_dispatches`,
+  `queue_nacks`, `queue_renews`, `orchestration_jobs`, `orchestration_dispatches`,
   `locks_acquired`, `lock_conflicts`, `locks_renewed`, `locks_released`,
   `locks_expired`
 - gauges: `messages_in_memory`, `jobs_in_memory`, `leased_messages`, `locks_held`
@@ -249,7 +259,7 @@ session runs its own copy, configured by `BUS_URL`, `BUS_API_TOKEN` and
 distinct. The lock scope `BUS_REPO` defaults to the origin remote's repo name.
 
 Tools: `acquire_lock`, `release_lock`, `renew_lock`, `check_lock`,
-`list_locks`, `claim_work`, `ack_work`, `nack_work`, `post_message`,
+`list_locks`, `claim_work`, `ack_work`, `nack_work`, `renew_work`, `post_message`,
 `read_messages`, `request_decision`, `check_decision`, `report_status`.
 Decision and status messages use the `agent_contract.py` envelope
 (`request_decision`, `provide_decision`, `report_status`) on channels
@@ -272,6 +282,19 @@ Setup for Claude Code: `docs/MCP_SETUP.md`. Demo:
 
 A2A 1.0, JSON-RPC binding. Design: `docs/A2A_MAPPING.md`. Walkthrough:
 `docs/A2A_DEMO.md`.
+
+### GET /ui
+The status page (`bus_ui.py`): locks, runs, status reports, lock events and
+pending decisions with Approve and Deny buttons. The HTML is public; the page
+asks for a bus token and sends it on every API call it makes.
+
+### Fencing at commit time
+`scripts/install_hooks.sh <repo>` installs `scripts/hooks/pre-commit`. The MCP
+adapter writes its held locks and token to `<git dir>/iac-bus-locks.json`
+(0600); the hook refuses a commit whose staged files are not each covered by
+a live exclusive lock, validated against `POST /bus/locks/validate` at commit
+time. No lock file means a human is committing and the commit is allowed
+(`IAC_BUS_HOOK_STRICT=1` to require one; `IAC_BUS_HOOK_SKIP=1` to bypass once).
 
 #### GET /.well-known/agent-card.json
 The bus's Agent Card. Public (no token), `Cache-Control: public, max-age=300`.
@@ -327,14 +350,15 @@ token and `BUS_WORK_MESSAGE_ID`, runs `claude -p` in `--workdir`, then acks
 with Claude's reply as `result` or nacks without requeue with the reason, and
 ends the agent's run (releasing its locks). The agent never receives the
 shared token. Options: `--model`, `--allow` (extra tool permissions),
-`--agent-timeout` (keep it under `--lease`), `--once`, `--max-items`.
+`--agent-timeout`, `--lease` (renewed while the agent runs), `--once`, `--max-items`.
 
 #### Outbound bridge (`scripts/a2a_bridge.py`)
 Claims items from every registered agent's `outbound_queue`, locks the item's
 `lock_paths`, sends `SendMessage` to the agent's JSON-RPC endpoint (token from
 `credential_env`), relays `INPUT_REQUIRED` / `AUTH_REQUIRED` as a bus
 `request_decision`, then acks with the artifacts, or nacks with the reason. It
-posts `report_result` on `a2a.<handle>`. Run one bridge per bus.
+posts `report_result` on `a2a.<handle>`, and renews the item's lease while
+the remote task runs.
 
 ### POST /agents/register
 Registers an agent and starts a run for it. Needs the shared token (or an

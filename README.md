@@ -1,46 +1,87 @@
-# Inter-Agent Communication Bus (IAC Bus)
+# iac-bus: a coordination bus for coding agents
 
-Lightweight message bus for coordinating multiple agents over HTTP.
+Several coding agents (Claude Code sessions, Cursor agents, any MCP client, any
+A2A agent) can work in one repository without overwriting each other. The bus
+gives them path locks with fencing tokens, work queues with leases, a real
+identity per session, a way to ask a human before risky steps, and a way to
+see what everyone else is doing. It is one Python process with an HTTP API,
+an MCP adapter and an A2A endpoint.
 
-> **Ports differ between this README and the live box.** `BUS_PORT` defaults to
-> **8091**, which is what the examples below and the dev deploy use. The running
-> production VM listens on **8101** (`.github/workflows/prod-deploy.yml` sets
-> `PROD_BUS_PORT: "8101"`; see also `AGENTS.md` and `docs/OCI-LIVE.md`). Against
-> the live host, substitute 8101 — e.g. `http://129.153.192.75:8101/health`.
->
-> **The public hostname does not resolve yet.** `iac-bus.knowshowgo.com` is
-> NXDOMAIN, re-checked 2026-09-23; the A record to `129.153.192.75` has never
-> been created (tracked as blocker B-002 in `docs/AGENT_TASKS.md`). Until it
-> exists, use the IP and port directly, and treat any doc that prints the
-> hostname as aspirational.
+## Quickstart (5 minutes)
 
-## Coordinating coding agents
-
-Several coding agents (Claude Code sessions, Cursor agents, any MCP client) can
-work in one repo through the bus without overwriting each other.
-
-1. Run the bus: `BUS_API_TOKEN=... python server.py`, or use the shared host.
-2. Give every agent session the MCP adapter, `mcp_server.py`, with its own
-   `BUS_AGENT_ID`. [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md) shows how to register
-   it in Claude Code for two sessions.
-3. The agents get these tools:
-
-   | Tool | Use |
-   | --- | --- |
-   | `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
-   | `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
-   | `list_locks` | who is editing what |
-   | `claim_work` / `ack_work` / `nack_work` | take queued tasks under a lease |
-   | `post_message` / `read_messages` | talk to other agents and humans |
-   | `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
-   | `report_status` | publish state and a one-line summary |
-
-See it work, with a throwaway bus and two real MCP server processes:
+**1. Install.** Python 3.9+ for the bus, 3.10+ for the MCP adapter.
 
 ```bash
-pip install -r requirements.txt -r requirements-mcp.txt
-bash scripts/demo_two_agents.sh
+pipx install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"
+# or, in a venv:  pip install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"
 ```
+
+**2. Run a bus** (one process; `IAC_BUS_STORE=sqlite` keeps state across restarts):
+
+```bash
+BUS_PORT=8101 BUS_API_TOKEN=devtoken IAC_BUS_STORE=sqlite IAC_BUS_DB=~/.iac-bus.db iac-bus
+```
+
+**3. Give Claude Code the tools.** In your repo, add a project `.mcp.json`
+(or run `claude mcp add`; see [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md)):
+
+```json
+{"mcpServers": {"iac-bus": {"command": "iac-bus-mcp",
+  "env": {"BUS_URL": "http://127.0.0.1:8101", "BUS_API_TOKEN": "${BUS_API_TOKEN}",
+          "BUS_AGENT_ID": "${BUS_AGENT_ID:-claude}"}}}}
+```
+
+Then start two sessions in two worktrees:
+
+```bash
+BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.a claude -w a     # terminal 1
+BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.b claude -w b     # terminal 2
+```
+
+Each session registers its own run on the bus and gets these tools. The tool
+descriptions tell the agent to lock before editing and to ask before risky
+steps; the prompts you give it need not mention the bus at all.
+
+| Tool | Use |
+| --- | --- |
+| `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
+| `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
+| `list_locks` | who is editing what |
+| `claim_work` / `ack_work` / `nack_work` / `renew_work` | take queued tasks under a lease |
+| `post_message` / `read_messages` | talk to other agents and humans |
+| `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
+| `report_status` | publish state and a one-line summary |
+
+**4. Check it.** `iac-bus-mcp --check` prints the resolved identity and pings
+the bus. In a session, `/mcp` lists `iac-bus` with 14 tools.
+
+## What you get
+
+- **Locks that mean something.** Folder locks cover everything below them,
+  overlap is by path segment, every acquire gets a rising fencing token, and
+  `check_lock` before a commit catches a lock that expired or was taken over.
+- **Identity the bus derives.** Each session gets a run token; the bus ignores
+  any name a caller sends. One agent cannot release another's locks or ack
+  another's work. Grants restrict what a run may touch.
+- **Supervision.** The adapter states an approval policy (deletes, merges,
+  deploys, API changes need a `request_decision` first); questions reach a
+  human on a bus channel, or an A2A requester as `TASK_STATE_INPUT_REQUIRED`.
+- **Fencing you can enforce.** `bash scripts/install_hooks.sh` installs a
+  pre-commit hook that refuses a commit unless every staged file is covered by
+  a live exclusive lock, checked against the bus at commit time.
+- **A page for the human.** `GET /ui` shows locks, runs, status reports and
+  pending decisions, with Approve and Deny buttons.
+
+  ![the bus status page: a pending decision with Approve and Deny, locks, runs, status reports](docs/img/ui.png)
+- **Wake-ups.** `iac-bus-runner --queue <q> --workdir <repo>` starts a Claude
+  Code session per queued item and returns its reply as the result.
+- **Evidence.** Real Claude Code sessions pass the coordination trial 14/14
+  against the bus on Oracle Cloud ([`docs/CLAUDE_TRIAL_OCI.md`](docs/CLAUDE_TRIAL_OCI.md)),
+  and an A2A task was done end to end by a session the runner started
+  ([`docs/RUNNER_DEMO.md`](docs/RUNNER_DEMO.md)). Numbers: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+See it work without Claude, with a throwaway bus and two real MCP server
+processes: `bash scripts/demo_two_agents.sh` (from a checkout).
 
 ```
 [A] acquire_lock("src/app.py", reason="refactor login flow", ttl_seconds=120)
@@ -52,21 +93,10 @@ bash scripts/demo_two_agents.sh
 [B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
 ```
 
-To have work picked up without anyone starting an agent, run
-`scripts/agent_runner.py --queue <queue> --workdir <repo>`: it claims each item,
-starts a Claude Code session with its own run token, and acks the item with
-Claude's reply ([`docs/RUNNER_DEMO.md`](docs/RUNNER_DEMO.md) shows an A2A task
-done this way against the OCI bus).
-
-Try it with real Claude Code sessions, whose prompts never mention the bus:
-`python scripts/claude_agents_trial.py` (needs the `claude` CLI; prints a
-pass/fail report and the model cost).
-
 Locks reduce collisions between agents. Git branches, CI and review stay the
-source of truth for code. Each adapter registers a run at startup, so the bus
-derives every agent's identity from its run token and one agent cannot release
-another's locks. Set `BUS_REQUIRE_RUN_TOKEN=1` to stop shared-token callers
-from naming themselves on `/bus/*`.
+source of truth for code. `docs/MCP_SETUP.md` covers two-session setup in
+detail; `DOCUMENTATION.md` is the API reference; `docs/OCI-LIVE.md` describes
+the hosted instance on Oracle Cloud.
 
 ## A2A interop
 

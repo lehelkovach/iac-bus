@@ -22,7 +22,8 @@ jobs:
   deploy-prod-vm:
     runs-on: ubuntu-latest
     needs: test
-    if: ${{ secrets.IAC_BUS_PROD_HOST != '' && secrets.IAC_BUS_PROD_USER != '' && secrets.IAC_BUS_PROD_KEY != '' }}
+    # NOTE: `secrets` is NOT available in a job-level `if:`, so gate inside the
+    # step instead, where the `secrets` context IS available.
     steps:
       - uses: actions/checkout@v4
       - name: Deploy prod
@@ -37,5 +38,10 @@ jobs:
           PROD_BUS_LOG_LEVEL: INFO
           IAC_BUS_PUBLIC_HOST: iac-bus.knowshowgo.com
         run: |
+          set -euo pipefail
+          if [ -z "${IAC_BUS_PROD_HOST}" ] || [ -z "${IAC_BUS_PROD_USER}" ] || [ -z "${IAC_BUS_PROD_KEY}" ]; then
+            echo "Prod deploy secrets not set (IAC_BUS_PROD_HOST/USER/KEY); skipping deploy."
+            exit 0
+          fi
           chmod +x scripts/deploy-prod-vm.sh
           ./scripts/deploy-prod-vm.sh

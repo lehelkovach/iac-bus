@@ -17,6 +17,8 @@ config = json.loads(Path(args[args.index("--mcp-config") + 1]).read_text())
 env = config["mcpServers"]["iac-bus"]["env"]
 mode = os.environ.get("FAKE_AGENT_MODE", "ok")
 
+import time as _time
+_time.sleep(float(os.environ.get("FAKE_AGENT_SLEEP", "0")))
 if mode == "fail":
     print("simulated crash", file=sys.stderr)
     sys.exit(1)

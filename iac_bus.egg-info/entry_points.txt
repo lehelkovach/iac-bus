@@ -1,0 +1,5 @@
+[console_scripts]
+iac-bus = server:main
+iac-bus-bridge = a2a_bridge:main
+iac-bus-mcp = mcp_server:main
+iac-bus-runner = agent_runner:main

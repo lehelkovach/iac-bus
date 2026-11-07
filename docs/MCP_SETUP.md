@@ -1,6 +1,6 @@
 # MCP setup: two Claude Code sessions on one repo
 
-`mcp_server.py` is a stdio MCP server that turns the bus HTTP API into tools a
+`iac-bus-mcp` (`mcp_server.py` in the repo) is a stdio MCP server that turns the bus HTTP API into tools a
 coding agent can call: path locks, work queues, messages, decisions and status.
 Each agent session runs its own copy, with its own `BUS_AGENT_ID`.
 
@@ -9,27 +9,35 @@ This guide registers it for two Claude Code sessions, **agent A** and
 
 ## 1. Prerequisites
 
-- A running bus that both sessions can reach. Locally:
+- **The adapter on the machine that runs the agents.** Python 3.10+:
 
   ```bash
-  cd /path/to/iac-bus
-  python3 -m venv venv
-  ./venv/bin/pip install -r requirements.txt -r requirements-mcp.txt
-  BUS_PORT=8101 BUS_API_TOKEN=devtoken ./venv/bin/python server.py
+  pipx install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"
   ```
 
-  Run a single bus process. Locks live in that process's memory.
-- The MCP SDK on the machine that runs the agents:
-  `pip install -r requirements-mcp.txt` (it pins `mcp>=2.3,<3`).
-- Check the adapter can reach the bus before involving Claude Code:
+  This gives you `iac-bus-mcp` (the adapter), `iac-bus` (the server),
+  `iac-bus-runner` and `iac-bus-bridge`. From a checkout, the equivalent is
+  `/path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py` wherever
+  this guide says `iac-bus-mcp`.
+
+- **A running bus that every session can reach.** Locally:
 
   ```bash
-  BUS_URL=http://127.0.0.1:8101 BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.a \
-    /path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py --check
+  BUS_PORT=8101 BUS_API_TOKEN=devtoken IAC_BUS_STORE=sqlite IAC_BUS_DB=~/.iac-bus.db iac-bus
+  ```
+
+  Run a single bus process. With `IAC_BUS_STORE=sqlite` locks, run tokens and
+  tasks survive a restart. For a shared bus, put it behind HTTPS
+  (`scripts/oci_launch_bus_vm.py --https` does this on Oracle Cloud).
+
+- **Check the adapter can reach the bus** before involving Claude Code:
+
+  ```bash
+  BUS_URL=http://127.0.0.1:8101 BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.a iac-bus-mcp --check
   ```
 
   It prints the resolved agent id, repo scope and bus URL, then pings
-  `/health` and `/bus/locks`.
+  `/health`, `/agents/whoami` and `/bus/locks`.
 
 ## 2. Configuration
 
@@ -95,8 +103,7 @@ token out of the file:
 {
   "mcpServers": {
     "iac-bus": {
-      "command": "/path/to/iac-bus/venv/bin/python",
-      "args": ["/path/to/iac-bus/mcp_server.py"],
+      "command": "iac-bus-mcp",
       "env": {
         "BUS_URL": "${BUS_URL:-http://127.0.0.1:8101}",
         "BUS_API_TOKEN": "${BUS_API_TOKEN}",
@@ -139,7 +146,7 @@ cd /path/to/your-repo-agent-b
 claude mcp add \
   --env BUS_URL=http://127.0.0.1:8101 BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.your-repo.b \
   --scope local \
-  iac-bus -- /path/to/iac-bus/venv/bin/python /path/to/iac-bus/mcp_server.py
+  iac-bus -- iac-bus-mcp
 ```
 
 If your Claude Code build parses `--env` differently, use
@@ -149,12 +156,29 @@ project `.mcp.json` entry with the same name; entries are not merged.
 
 ### Check it
 
-- Inside each session, `/mcp` should show `iac-bus` connected with 13 tools.
+- Inside each session, `/mcp` should show `iac-bus` connected with 14 tools.
 - From a shell, `claude mcp list` shows the status and `claude mcp get iac-bus`
   shows the entry and any issue.
 - For spawn problems, start with `claude --debug='mcp'`.
 - Claude Code sets `CLAUDE_PROJECT_DIR` for the servers it spawns; the adapter
   uses it to find the repo root. Set `BUS_REPO_ROOT` to override.
+
+## 4b. Enforce the locks at commit time (optional, recommended)
+
+The lock tools are cooperative: an agent that ignores them can still write.
+The pre-commit hook makes the fencing token a gate. In each checkout or
+worktree:
+
+```bash
+bash /path/to/iac-bus/scripts/install_hooks.sh /path/to/your-repo
+```
+
+The adapter writes the locks it holds, and its token, to
+`<git dir>/iac-bus-locks.json` (mode 0600). At `git commit`, the hook refuses
+the commit unless every staged file is covered by a live exclusive lock,
+checked against the bus right then. Without a lock file (a human committing)
+the hook allows the commit; `IAC_BUS_HOOK_STRICT=1` requires one, and
+`IAC_BUS_HOOK_SKIP=1` bypasses it once.
 
 ## 5. Tell the agents the rules
 
@@ -182,8 +206,12 @@ curl -s "http://127.0.0.1:8101/bus/messages?channel=locks"  -H "Authorization: B
 curl -s "http://127.0.0.1:8101/bus/messages?channel=status" -H "Authorization: Bearer devtoken"
 ```
 
-Answer a `request_decision` (the agent shows the `conversation_id`; requests
-are on channel `decisions`):
+Or open **`<bus>/ui`** in a browser: it shows locks, runs, status reports and
+the pending decisions, and answers a decision with Approve or Deny. Enter the
+bus token once; the page keeps it in the browser.
+
+Answer a `request_decision` by hand (the agent shows the `conversation_id`;
+requests are on channel `decisions`):
 
 ```bash
 curl -s -X POST http://127.0.0.1:8101/bus/messages \
