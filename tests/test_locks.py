@@ -477,5 +477,5 @@ def test_locks_work_with_sqlite_store(monkeypatch, tmp_path):
     assert client.post("/bus/locks/release", json={"lock_id": lock["lock_id"], "agent": "A"}).status_code == 200
     assert [m["type"] for m in _lock_events(client)] == ["lock.acquired", "lock.released"]
     health = client.get("/health").get_json()
-    assert health["locks_durable"] is False
+    assert health["locks_durable"] is True
     srv._store.close()

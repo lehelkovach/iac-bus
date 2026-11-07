@@ -212,7 +212,7 @@ run's `actor` as your sender, worker and lock holder, whatever names the body
 contains. `GET /agents/whoami`, `POST /agents/heartbeat`, `GET /agents/runs`
 and `POST /agents/runs/end` manage runs. The shared token keeps working;
 `BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` require run tokens. Agent records go
-through the configured store; runs are in memory.
+and runs go through the configured store (durable with `IAC_BUS_STORE=sqlite`).
 
 ## Environment
 

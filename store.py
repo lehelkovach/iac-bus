@@ -14,9 +14,11 @@ Two interchangeable backends sit behind the same small interface:
   what the current HTTP API needs; the lock/endpoint tables from that branch
   were left behind.
 
-Each backend also carries ``locks``, a path-lock table (``locks.py``). It is
-in memory in both backends today, so locks do not survive a restart even with
-SQLite; ``/health`` reports this as ``locks_durable``.
+Each backend also carries ``locks`` (``locks.py``), ``runs`` (``runs.py``) and
+``a2a_tasks`` (``a2a_interop.py``). They work in memory; with SQLite they also
+write through ``SqliteJournal`` and reload on startup, so locks (with the
+fencing counter), run tokens and A2A tasks survive a restart. ``/health``
+reports ``locks_durable``.
 
 Both backends keep the message dict shape the HTTP API already returns, so
 switching backend never changes a response body. Orchestration job state and
@@ -244,7 +246,78 @@ CREATE TABLE IF NOT EXISTS agents (
     record TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agents_handle ON agents(agent_handle);
+
+CREATE TABLE IF NOT EXISTS durable_records (
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    record TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (kind, key)
+);
 """
+
+# How long finished records are kept in the journal.
+ENDED_RUN_RETENTION_SECONDS = 7 * 86400
+FINISHED_TASK_RETENTION_SECONDS = 30 * 86400
+_TERMINAL_A2A = ("TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED")
+
+
+class SqliteJournal:
+    """Write-through persistence for the in-memory lock, run and A2A task tables.
+
+    Records are JSON keyed by (kind, key). The tables keep working in memory
+    and call save/delete on every change; at startup they load() their kind.
+    Shares the store's connection and lock.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: "threading.RLock"):
+        self._conn = conn
+        self._lock = lock
+
+    def save(self, kind: str, key: str, record: Dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO durable_records (kind, key, record, updated_at) VALUES (?, ?, ?, ?)",
+                (kind, key, json.dumps(record, separators=(",", ":")), time.time()),
+            )
+            self._conn.commit()
+
+    def delete(self, kind: str, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM durable_records WHERE kind=? AND key=?", (kind, key))
+            self._conn.commit()
+
+    def get(self, kind: str, key: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT record FROM durable_records WHERE kind=? AND key=?", (kind, key)
+            ).fetchone()
+        return json.loads(row["record"]) if row else None
+
+    def load(self, kind: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record FROM durable_records WHERE kind=? ORDER BY updated_at ASC", (kind,)
+            ).fetchall()
+        return [json.loads(r["record"]) for r in rows]
+
+    def prune(self, now: float) -> int:
+        """Drop runs that ended long ago and A2A tasks that finished long ago."""
+        removed = 0
+        for kind, cutoff, done in (
+            ("run", now - ENDED_RUN_RETENTION_SECONDS, lambda r: r.get("status") != "active"),
+            ("a2a_task", now - FINISHED_TASK_RETENTION_SECONDS, lambda r: r.get("state") in _TERMINAL_A2A),
+        ):
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT key, record FROM durable_records WHERE kind=? AND updated_at < ?", (kind, cutoff)
+                ).fetchall()
+                stale = [r["key"] for r in rows if done(json.loads(r["record"]))]
+                for key in stale:
+                    self._conn.execute("DELETE FROM durable_records WHERE kind=? AND key=?", (kind, key))
+                self._conn.commit()
+            removed += len(stale)
+        return removed
 
 
 class SqliteStore:
@@ -262,12 +335,9 @@ class SqliteStore:
             if parent:
                 os.makedirs(parent, exist_ok=True)
         self._lock = threading.RLock()
-        # Path locks stay in memory even in this backend; a restart drops
-        # them. See the TODO(L5) in locks.py before persisting them. Runs
-        # (runs.py) are in memory too; clients register again after a restart.
-        self.locks = MemoryLockTable()
-        self.runs = MemoryRunTable()
-        self.a2a_tasks = MemoryA2ATaskTable()
+        # Locks, runs and A2A tasks work in memory and write through this
+        # journal, so they survive a restart (memory stays authoritative: the
+        # bus is a single process).
         # check_same_thread=False: Flask serves requests on worker threads;
         # every access is serialised by self._lock.
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -276,6 +346,11 @@ class SqliteStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.commit()
+        self.journal = SqliteJournal(self._conn, self._lock)
+        self.journal.prune(time.time())
+        self.locks = MemoryLockTable(journal=self.journal)
+        self.runs = MemoryRunTable(journal=self.journal)
+        self.a2a_tasks = MemoryA2ATaskTable(journal=self.journal)
 
     def close(self) -> None:
         with self._lock:
