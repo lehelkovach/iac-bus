@@ -97,10 +97,11 @@ its own branch and PR to `dev`, stacked on the previous phase.
 
 ### OCI deploy and Claude trials (2026-11-03)
 
-- `iac-bus-coord-dev-https` (`https://129-146-105-237.sslip.io`) runs `dev`
-  behind Caddy with Let's Encrypt, deployed through the OCI API with
-  `scripts/oci_launch_bus_vm.py --https`; ports 80/443 open through a
-  VM-only NSG. Smoke 20/20 from a cloud agent over HTTPS. The production VM `iac-bus-6c58` is unchanged.
+- `iac-bus-coord-dev-https-2` (`https://129-146-109-36.sslip.io`) runs `dev`
+  (0.2.0 content) behind Caddy with Let's Encrypt and the SQLite store,
+  deployed through the OCI API with `scripts/oci_launch_bus_vm.py --https`;
+  ports 80/443 open through a VM-only NSG. Smoke 20/20 from a cloud agent
+  over HTTPS. The first HTTPS VM (`129.146.105.237`) is terminated. The production VM `iac-bus-6c58` is unchanged.
   Details and the HTTPS blocker: `docs/OCI-LIVE.md`.
 - `scripts/claude_agents_trial.py` runs real `claude -p` sessions through the
   MCP adapter. Prompts never mention the bus. First run (local bus, Sonnet):
