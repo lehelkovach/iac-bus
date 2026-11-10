@@ -140,6 +140,13 @@ CREATE INDEX IF NOT EXISTS idx_task_assignments_wait_for ON task_assignments(wai
 
 CREATE SEQUENCE IF NOT EXISTS lock_fencing_token_seq;
 
+-- TODO(L5): `resource_key ... UNIQUE` allows one row per resource, so it cannot
+-- represent several holders of a *shared* lock on the same path, which the
+-- in-memory implementation (locks.py, POST /bus/locks/acquire) supports.
+-- Before locks move to SQL, key holders by (repo, resource_key, holder) or add a
+-- resource_lock_holders table. Overlap is by path segment ("src/auth" covers
+-- "src/auth/login.py"), so a plain equality UNIQUE also cannot detect
+-- parent/child conflicts; that check stays in application code.
 CREATE TABLE IF NOT EXISTS resource_locks (
     lock_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     resource_key TEXT NOT NULL UNIQUE,

@@ -1,19 +1,133 @@
-# Inter-Agent Communication Bus (IAC Bus)
+# iac-bus: a coordination bus for coding agents
 
-> **Status (2026-09-23): M0, with one live consumer.** OSLO (`osl-oc-agent`)
-> uses this bus as an ICBus transport for agent swarms (`OSLO_BUS_KIND=iac-bus`):
-> subagents and their parent meet on one channel. Direction and the rungs that
-> matter now are in [docs/ROLE.md](docs/ROLE.md) and OSLO's
-> `docs/SWARM-LADDER.md`. The old L1–L5 ladder is not the plan; only the pieces
-> the swarm ladder names (TLS, presence, a durable ledger) come back, and only
-> when a swarm rung needs them.
+Several coding agents (Claude Code sessions, Cursor agents, any MCP client, any
+A2A agent) can work in one repository without overwriting each other. The bus
+gives them path locks with fencing tokens, work queues with leases, a real
+identity per session, a way to ask a human before risky steps, and a way to
+see what everyone else is doing. It is one Python process with an HTTP API,
+an MCP adapter and an A2A endpoint.
 
-Lightweight message bus for coordinating multiple agents over HTTP.
+## Quickstart (5 minutes)
+
+**1. Install.** Python 3.9+ for the bus, 3.10+ for the MCP adapter.
+
+```bash
+pipx install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"
+# or, in a venv:  pip install "iac-bus[mcp] @ git+https://github.com/lehelkovach/iac-bus"
+```
+
+**2. Run a bus** (one process; `IAC_BUS_STORE=sqlite` keeps state across restarts):
+
+```bash
+BUS_PORT=8101 BUS_API_TOKEN=devtoken IAC_BUS_STORE=sqlite IAC_BUS_DB=~/.iac-bus.db iac-bus
+```
+
+**3. Give Claude Code the tools.** In your repo, add a project `.mcp.json`
+(or run `claude mcp add`; see [`docs/MCP_SETUP.md`](docs/MCP_SETUP.md)):
+
+```json
+{"mcpServers": {"iac-bus": {"command": "iac-bus-mcp",
+  "env": {"BUS_URL": "http://127.0.0.1:8101", "BUS_API_TOKEN": "${BUS_API_TOKEN}",
+          "BUS_AGENT_ID": "${BUS_AGENT_ID:-claude}"}}}}
+```
+
+Then start two sessions in two worktrees:
+
+```bash
+BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.a claude -w a     # terminal 1
+BUS_API_TOKEN=devtoken BUS_AGENT_ID=claude.b claude -w b     # terminal 2
+```
+
+Each session registers its own run on the bus and gets these tools. The tool
+descriptions tell the agent to lock before editing and to ask before risky
+steps; the prompts you give it need not mention the bus at all.
+
+| Tool | Use |
+| --- | --- |
+| `acquire_lock` / `release_lock` / `renew_lock` | lock a file or folder **before** editing it, release it after |
+| `check_lock` | fencing check right before a commit; fails if the lock expired or was taken over |
+| `list_locks` | who is editing what |
+| `claim_work` / `ack_work` / `nack_work` / `renew_work` | take queued tasks under a lease |
+| `post_message` / `read_messages` | talk to other agents and humans |
+| `request_decision` / `check_decision` | ask a supervisor or human before a risky step |
+| `report_status` | publish state and a one-line summary |
+
+**4. Check it.** `iac-bus-mcp --check` prints the resolved identity and pings
+the bus. In a session, `/mcp` lists `iac-bus` with 14 tools.
+
+## What you get
+
+- **Locks that mean something.** Folder locks cover everything below them,
+  overlap is by path segment, every acquire gets a rising fencing token, and
+  `check_lock` before a commit catches a lock that expired or was taken over.
+- **Identity the bus derives.** Each session gets a run token; the bus ignores
+  any name a caller sends. One agent cannot release another's locks or ack
+  another's work. Grants restrict what a run may touch.
+- **Supervision.** The adapter states an approval policy (deletes, merges,
+  deploys, API changes need a `request_decision` first); questions reach a
+  human on a bus channel, or an A2A requester as `TASK_STATE_INPUT_REQUIRED`.
+- **Fencing you can enforce.** `bash scripts/install_hooks.sh` installs a
+  pre-commit hook that refuses a commit unless every staged file is covered by
+  a live exclusive lock, checked against the bus at commit time.
+- **A page for the human.** `GET /ui` shows locks, runs, status reports and
+  pending decisions, with Approve and Deny buttons.
+
+  ![the bus status page: a pending decision with Approve and Deny, locks, runs, status reports](docs/img/ui.png)
+- **Wake-ups.** `iac-bus-runner --queue <q> --workdir <repo>` starts a Claude
+  Code session per queued item and returns its reply as the result.
+- **Evidence.** Real Claude Code sessions pass the coordination trial 14/14
+  against the bus on Oracle Cloud ([`docs/CLAUDE_TRIAL_OCI.md`](docs/CLAUDE_TRIAL_OCI.md)),
+  and an A2A task was done end to end by a session the runner started
+  ([`docs/RUNNER_DEMO.md`](docs/RUNNER_DEMO.md)). Numbers: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+See it work without Claude, with a throwaway bus and two real MCP server
+processes: `bash scripts/demo_two_agents.sh` (from a checkout).
+
+```
+[A] acquire_lock("src/app.py", reason="refactor login flow", ttl_seconds=120)
+[A]   -> acquired. fencing_token=1793669595760, expires in 120s
+[B] acquire_lock("src/app.py")
+[B]   -> refused (HTTP 409): held by agent-a#2ef0f0 (exclusive, "refactor login flow"), expires in 120s
+[B] acquire_lock("src/app.py", wait_seconds=15)   ... blocking until the path frees up
+[A] release_lock("src/app.py") -> released ['src/app.py']
+[B]   -> acquired after waiting 1.0s. fencing_token=1793669595761 (> A's 1793669595760)
+```
+
+Locks reduce collisions between agents. Git branches, CI and review stay the
+source of truth for code. `docs/MCP_SETUP.md` covers two-session setup in
+detail; `DOCUMENTATION.md` is the API reference; `docs/OCI-LIVE.md` describes
+the hosted instance on Oracle Cloud.
+
+## A2A interop
+
+The bus speaks [A2A 1.0](https://a2a-protocol.org) in both directions, so any
+A2A agent can join supervised work.
+
+- **Discovery.** `GET /.well-known/agent-card.json` is the bus's public Agent
+  Card. It offers two skills: `enqueue-work` (a task becomes a work item our
+  coding agents claim) and `run-job` (a one-step orchestration job).
+- **Incoming tasks.** `POST /a2a` (JSON-RPC, `A2A-Version: 1.0`) implements
+  `SendMessage`, `GetTask`, `ListTasks` and `CancelTask`. Task state follows
+  the work on the bus. A worker's `request_decision` shows up as
+  `TASK_STATE_INPUT_REQUIRED`, and the caller's reply goes back as the
+  decision. The worker's ack `result` becomes the task's artifact.
+- **Registering an agent.** `POST /agents/a2a/register` stores an agent's
+  card (fetched over https, or inline), grants it deny-by-default allowlists
+  of skills, queues, channels and lock paths, and mints its run token. `/a2a`
+  never accepts the shared token.
+- **Outgoing work.** `scripts/a2a_bridge.py` delivers work queued for a
+  registered agent: it locks the declared paths, sends the task, relays the
+  agent's questions as bus decisions, and acks with the agent's artifacts.
+
+Walkthrough with real output: [`docs/A2A_DEMO.md`](docs/A2A_DEMO.md) (or run
+`bash scripts/a2a_curl_demo.sh`). Design and decisions:
+[`docs/A2A_MAPPING.md`](docs/A2A_MAPPING.md).
 
 ## Features
 - Simple REST endpoints for posting and polling messages
 - In-memory retention with size + time limits
 - Queue-style work leasing (claim/ack/nack)
+- Repo path locks with fencing tokens (acquire/renew/release/validate)
 - Optional bearer-token auth
 - Systemd service deployment
 
@@ -36,6 +150,12 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
 Use `since_id` to avoid re-reading older messages:
 ```bash
 curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
+  -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+
+Long-poll with `wait_seconds` (capped by `BUS_WAIT_SECONDS_MAX`, default 30):
+```bash
+curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>&wait_seconds=10" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
@@ -74,6 +194,56 @@ curl -X POST http://<BUS_IP>:8091/bus/queues/nack \
 curl http://<BUS_IP>:8091/health
 ```
 
+Returns `status=ok` plus ops gauges: `uptime_seconds`, `messages_retained`,
+`queue_pending_count`, `queue_leased_count`, `jobs_active`, `version`,
+`git_sha` (when set), and `process_rss_bytes` when available.
+
+### Metrics (JSON)
+```bash
+curl http://<BUS_IP>:8091/metrics
+```
+
+Counters (`messages_posted`, `messages_polled`, `queue_claims`/`acks`/`nacks`,
+`orchestration_jobs`/`dispatches`), gauges (`messages_in_memory`,
+`jobs_in_memory`, `leased_messages`), and rolling avg timers
+(`post_latency_ms_avg`, `poll_latency_ms_avg`, `claim_latency_ms_avg`).
+`/health` and `/metrics` do not require auth.
+
+### Path locks
+Lock a repo path before editing it; release it afterwards. Folder locks cover
+everything below them, overlap is by whole path segment, and every acquire
+gets a rising `fencing_token`. Full rules: `DOCUMENTATION.md` → Path locks.
+```bash
+# acquire (200 with lock_id + fencing_token, or 409 with held_by/mode/reason/expires_at)
+curl -X POST http://<BUS_IP>:8091/bus/locks/acquire \
+  -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo":"iac-bus","resource":"src/app.py","agent":"agent-a","ttl_seconds":600,"reason":"refactor","wait_seconds":0}'
+# renew / release (holder only)
+curl -X POST http://<BUS_IP>:8091/bus/locks/renew   -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a","ttl_seconds":600}'
+curl -X POST http://<BUS_IP>:8091/bus/locks/release -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"lock_id":"<id>","agent":"agent-a"}'
+# is my fencing token still live for this path? (200 / 409)
+curl -X POST http://<BUS_IP>:8091/bus/locks/validate -H "Authorization: Bearer $BUS_API_TOKEN" -H "Content-Type: application/json" -d '{"repo":"iac-bus","resource":"src/app.py","fencing_token":1793669138519}'
+# who holds what under a path
+curl "http://<BUS_IP>:8091/bus/locks?repo=iac-bus&resource_prefix=src/" -H "Authorization: Bearer $BUS_API_TOKEN"
+```
+Lock events are posted to channel `locks` (`lock.acquired`, `lock.released`, `lock.expired`).
+
+### Register agent and get a run token
+```bash
+curl -X POST http://<BUS_IP>:8091/agents/register \
+  -H "Authorization: Bearer $BUS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"handle":"agent:cursor.iac-bus.0@web","role":"worker"}'
+# -> {"agent": {...}, "run": {...}, "actor": "agent:cursor.iac-bus.0@web#3f2a1c", "run_token": "iacrun_..."}
+```
+
+Send `Authorization: Bearer <run_token>` on later requests and the bus uses the
+run's `actor` as your sender, worker and lock holder, whatever names the body
+contains. `GET /agents/whoami`, `POST /agents/heartbeat`, `GET /agents/runs`
+and `POST /agents/runs/end` manage runs. The shared token keeps working;
+`BUS_REQUIRE_RUN_TOKEN=1` makes `/bus/*` require run tokens. Agent records go
+and runs go through the configured store (durable with `IAC_BUS_STORE=sqlite`).
+
 ## Environment
 
 | Variable | Default | Purpose |
@@ -84,7 +254,24 @@ curl http://<BUS_IP>:8091/health
 | `BUS_MAX_MESSAGES` | `500` | Max retained messages |
 | `BUS_RETENTION_SECONDS` | `3600` | Message retention window |
 | `BUS_QUEUE_LEASE_SECONDS` | `60` | Default queue lease seconds |
-| `BUS_LOG_LEVEL` | `INFO` | Log level |
+| `BUS_WAIT_SECONDS_MAX` | `30` | Cap for `wait_seconds` long-poll and lock waits |
+| `BUS_LOCK_TTL_DEFAULT_SECONDS` | `300` | Lock lease when `ttl_seconds` is omitted |
+| `BUS_LOCK_TTL_MAX_SECONDS` | `3600` | Cap for lock `ttl_seconds` |
+| `BUS_RUN_TTL_DEFAULT_SECONDS` | `3600` | Run expiry after last use |
+| `BUS_RUN_TTL_MAX_SECONDS` | `86400` | Cap for `run_ttl_seconds` |
+| `BUS_REQUIRE_RUN_TOKEN` | off | Require run tokens on `/bus/*` |
+| `BUS_PUBLIC_URL` | request URL | Base URL advertised in the A2A Agent Card |
+| `BUS_A2A_NAME` / `BUS_A2A_ORG` | `iac-bus` / empty | Agent Card name and provider |
+| `BUS_A2A_ALLOW_HOSTS` | empty | Hosts allowed for http or private-address card URLs (development) |
+| `BUS_LOG_LEVEL` | `INFO` | Log level (`DEBUG` for live debug) |
+| `BUS_VERSION` | `0.1.0` | Reported in `/health` |
+| `BUS_GIT_SHA` | empty | Optional git sha (falls back to `GITHUB_SHA`) |
+| `IAC_BUS_STORE` | `memory` | Storage backend: `memory` (state lost on restart) or `sqlite` |
+| `IAC_BUS_DB` | `iac-bus.db` | SQLite file path when `IAC_BUS_STORE=sqlite` (parent dir is created) |
+
+With `IAC_BUS_STORE=sqlite`, messages, queue leases and agent registrations
+survive a restart; orchestration job state and `/metrics` counters stay
+in-process. The HTTP API is identical in both modes.
 
 ## Local Run
 ```bash
@@ -129,13 +316,19 @@ chmod +x scripts/deploy-dev-vm.sh
 ./scripts/deploy-dev-vm.sh
 ```
 
-Live debugging logs on dev VM:
+Live debugging on dev VM:
 ```bash
+# structured request logs + debug bus events
 ssh -i <key> <user>@<host> "sudo journalctl -u iac-bus-dev.service -f"
+
+# ops endpoints (port 8091 on the VM)
+curl http://<VM_IP>:8091/health
+curl http://<VM_IP>:8091/metrics
 ```
 
 Debug-level logging is enabled by default in dev deployment (`BUS_LOG_LEVEL=DEBUG`)
-and the service auto-restarts on file changes via `watchmedo`.
+and the service auto-restarts on file changes via `watchmedo`. Structured request
+logs include `request_id`, `method`, `path`, `status`, and `duration_ms`.
 
 ### Provision a brand-new OCI VM using `OCI_*` secrets
 

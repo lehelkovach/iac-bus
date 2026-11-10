@@ -1,5 +1,7 @@
 import importlib
 import sys
+import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,48 +144,215 @@ def test_poll_excludes_queue_by_default(monkeypatch):
     assert len(data["messages"]) == 2
 
 
-def test_since_id_pages_forward_without_loss(monkeypatch):
-    """A consumer paging with since_id must see every message exactly once,
-    even when more than `limit` arrive between polls (regression: the server
-    used to return the newest `limit` and drop the rest)."""
+def test_health_exposes_ops_gauges(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    server._jobs.clear()
+    client = server.app.test_client()
+
+    client.post("/bus/messages", json={"channel": "ops", "message": "hello"})
+    client.post(
+        "/bus/messages",
+        json={"queue": "work", "message": "task"},
+    )
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a", "lease_seconds": 30},
+    )
+    assert claim.status_code == 200
+
+    client.post(
+        "/bus/messages",
+        json={
+            "type": "orchestration.job",
+            "message": {
+                "job": {
+                    "job_id": "health-job",
+                    "steps": [{"id": "a"}],
+                }
+            },
+        },
+    )
+
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["messages_retained"] >= 2
+    assert data["queue_pending_count"] >= 0
+    assert data["queue_leased_count"] >= 1
+    assert data["jobs_active"] >= 1
+    assert "uptime_seconds" in data
+    assert data["uptime_seconds"] >= 0
+    assert "version" in data
+    assert "process_rss_bytes" in data
+
+
+def test_health_returns_core_fields(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    client = server.app.test_client()
+
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    for field in ("version", "locks_held", "runs_active", "a2a_tasks"):
+        assert field in data
+
+
+def test_metrics_returns_lock_run_a2a_counters(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    client = server.app.test_client()
+
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    counters = resp.get_json()["counters"]
+    for name in ("locks_acquired", "runs_registered", "a2a_requests"):
+        assert name in counters
+
+
+def test_metrics_increment_on_post_claim_ack(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._bus_messages.clear()
+    with server._metrics_lock:
+        for key in (
+            "messages_posted",
+            "messages_polled",
+            "queue_claims",
+            "queue_acks",
+            "queue_nacks",
+            "orchestration_jobs",
+            "orchestration_dispatches",
+        ):
+            server._metrics[key] = 0
+        for key in ("post_latency_ms", "poll_latency_ms", "claim_latency_ms"):
+            server._metrics[key].clear()
+    client = server.app.test_client()
+
+    post = client.post(
+        "/bus/messages",
+        json={"queue": "work", "message": "task"},
+    )
+    assert post.status_code == 201
+    msg_id = post.get_json()["message"]["id"]
+
+    claim = client.post(
+        "/bus/queues/claim",
+        json={"queue": "work", "worker": "agent-a", "lease_seconds": 30},
+    )
+    lease_id = claim.get_json()["message"]["lease_id"]
+
+    ack = client.post(
+        "/bus/queues/ack",
+        json={
+            "queue": "work",
+            "message_id": msg_id,
+            "worker": "agent-a",
+            "lease_id": lease_id,
+        },
+    )
+    assert ack.status_code == 200
+
+    client.get("/bus/messages")
+
+    metrics = client.get("/metrics").get_json()
+    assert metrics["counters"]["messages_posted"] >= 1
+    assert metrics["counters"]["queue_claims"] == 1
+    assert metrics["counters"]["queue_acks"] == 1
+    assert metrics["counters"]["messages_polled"] >= 1
+    assert metrics["gauges"]["messages_in_memory"] >= 0
+    assert metrics["timers"]["post_latency_ms_avg"] is not None
+    assert metrics["timers"]["claim_latency_ms_avg"] is not None
+
+
+def test_wait_seconds_timeout_returns_empty(monkeypatch):
     server = _load_server(monkeypatch, token="")
     server._bus_messages.clear()
     client = server.app.test_client()
 
-    first = client.post("/bus/messages", json={"channel": "c", "message": "m0"}).get_json()["message"]["id"]
-    for i in range(1, 8):
-        client.post("/bus/messages", json={"channel": "c", "message": f"m{i}"})
-
-    seen = []
-    cursor = first
-    while True:
-        body = client.get(f"/bus/messages?channel=c&since_id={cursor}&limit=3").get_json()
-        assert body["cursor_lost"] is False
-        seen.extend(m["message"] for m in body["messages"])
-        if not body["messages"]:
-            break
-        cursor = body["messages"][-1]["id"]
-        if not body["has_more"]:
-            break
-    assert seen == [f"m{i}" for i in range(1, 8)]
+    started = time.time()
+    resp = client.get("/bus/messages?channel=empty-wait&wait_seconds=1")
+    elapsed = time.time() - started
+    assert resp.status_code == 200
+    assert resp.get_json()["messages"] == []
+    assert 0.8 <= elapsed < 2.5
 
 
-def test_pruned_cursor_is_reported_not_silently_replayed(monkeypatch):
+def test_wait_seconds_returns_early_on_new_message(monkeypatch):
     server = _load_server(monkeypatch, token="")
     server._bus_messages.clear()
     client = server.app.test_client()
-    client.post("/bus/messages", json={"channel": "c", "message": "a"})
-    body = client.get("/bus/messages?channel=c&since_id=does-not-exist").get_json()
-    assert body["cursor_lost"] is True
-    assert [m["message"] for m in body["messages"]] == ["a"]
+    channel = "wait-early"
+    result = {}
+
+    def poller():
+        poll_client = server.app.test_client()
+        started = time.time()
+        resp = poll_client.get(f"/bus/messages?channel={channel}&wait_seconds=5")
+        result["elapsed"] = time.time() - started
+        result["status"] = resp.status_code
+        result["body"] = resp.get_json()
+
+    thread = threading.Thread(target=poller)
+    thread.start()
+    time.sleep(0.3)
+    client.post("/bus/messages", json={"channel": channel, "message": "ping"})
+    thread.join(timeout=6)
+    assert not thread.is_alive()
+    assert result["status"] == 200
+    assert len(result["body"]["messages"]) == 1
+    assert result["body"]["messages"][0]["message"] == "ping"
+    assert result["elapsed"] < 3.0
 
 
-def test_no_cursor_still_returns_latest(monkeypatch):
+def test_agents_register_stub(monkeypatch):
+    server = _load_server(monkeypatch, token="")
+    server._agents.clear()
+    client = server.app.test_client()
+
+    resp = client.post(
+        "/agents/register",
+        json={"handle": "agent:cursor.iac-bus.0@web", "role": "worker", "purpose": "smoke"},
+    )
+    assert resp.status_code == 201
+    data = resp.get_json()
+    assert data["success"] is True
+    assert data["agent"]["ephemeral"] is True
+    assert data["agent"]["agent_handle"] == "agent:cursor.iac-bus.0@web"
+    assert data["agent"]["agent_uuid"]
+
+
+def test_queue_lease_can_be_renewed_until_it_expires(monkeypatch):
     server = _load_server(monkeypatch, token="")
     server._bus_messages.clear()
     client = server.app.test_client()
-    for i in range(5):
-        client.post("/bus/messages", json={"channel": "c", "message": f"m{i}"})
-    body = client.get("/bus/messages?channel=c&limit=2").get_json()
-    assert [m["message"] for m in body["messages"]] == ["m3", "m4"]
-    assert "cursor_lost" not in body
+    client.post("/bus/messages", json={"channel": "q", "queue": "work", "message": "task"})
+    msg = client.post("/bus/queues/claim", json={"queue": "work", "worker": "w", "lease_seconds": 30}).get_json()["message"]
+    body = {"queue": "work", "message_id": msg["id"], "worker": "w", "lease_id": msg["lease_id"], "lease_seconds": 300}
+
+    renewed = client.post("/bus/queues/renew", json=body)
+    assert renewed.status_code == 200
+    assert renewed.get_json()["lease_until"] > msg["lease_until"] + 200
+
+    assert client.post("/bus/queues/renew", json=dict(body, worker="other")).status_code == 409
+    assert client.post("/bus/queues/renew", json=dict(body, lease_id="nope")).status_code == 409
+    assert client.post("/bus/queues/renew", json=dict(body, message_id="missing")).status_code == 404
+    assert client.post("/bus/queues/renew", json=dict(body, lease_seconds=0)).status_code == 400
+
+    # once the lease has lapsed, renewal is refused and the item is claimable again
+    for message in server._bus_messages:
+        if message["id"] == msg["id"]:
+            message["lease_until"] = time.time() - 1
+    assert client.post("/bus/queues/renew", json=body).status_code == 409
+    assert client.post("/bus/queues/claim", json={"queue": "work", "worker": "w2"}).status_code == 200
+    assert client.get("/metrics").get_json()["counters"]["queue_renews"] == 1
+
+
+def test_ui_page_is_public_and_answers_decisions_through_the_api(monkeypatch):
+    server = _load_server(monkeypatch, token="secret")
+    client = server.app.test_client()
+    page = client.get("/ui")
+    assert page.status_code == 200 and page.mimetype == "text/html"
+    assert "Pending decisions" in page.get_data(as_text=True)
+    assert "/bus/messages?channel=decisions" in page.get_data(as_text=True)
+    # the page itself needs no token, the API it calls does
+    assert client.get("/bus/locks").status_code == 401

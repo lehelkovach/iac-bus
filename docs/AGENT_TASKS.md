@@ -1,86 +1,80 @@
 # Agent Task Queue (Takeover Canonical)
 
 Status owner: any active takeover agent  
-Last updated: 2026-08-26 UTC  
+Last updated: 2026-11-07 UTC  
 Purpose: single file a new agent reads to continue work safely.
 
-## Progress pointer
-See `docs/PROGRESS.md` for ladder status, dogfood evidence, and live OCI edge
-(`iac-bus.knowshowgo.com` → `129.153.192.75:8101`).
+## Read first
+- `AGENTS.md` (hard constraints), then `docs/PROGRESS.md` (ladder, phase facts)
+  and `docs/OCI-LIVE.md` (VMs, DNS, deploy paths).
+- Local loop: `BUS_PORT=8101 BUS_API_TOKEN=devtoken python3 server.py`, then
+  `scripts/bus_smoke.sh` and `pytest -q`. Prove changes with both.
+- If a blocker below applies, report it. Do not fake VM, DNS or deploy success.
 
-> **2026-09-23:** tasks below are historical. Current direction: `docs/ROLE.md`.
+## Current state in one paragraph
+`dev` carries locks, MCP adapter, run tokens, A2A, SQLite durable state and the
+agent runner. It runs on `iac-bus-coord-dev-https`
+(`https://129-146-105-237.sslip.io`, smoke 20/20). Production VM `iac-bus-6c58`
+(`129.153.192.75:8101`) is unchanged and still serves an old build.
 
 ## Current Blockers
 
-### B-001: Full OCI provision secret set incomplete in cloud agent
-- Severity: blocker for *new* VM provision
-- Missing typical OCI_* provision secrets (tenancy/user/fingerprint/…).
-- `OCI_COMPARTMENT_ID` + API signing key may be present; VM SSH deploy keys
-  (`IAC_BUS_PROD_KEY` / `KSG_DEV_VM_KEY`) are still required for CI deploy.
+### B-001: Production VM `iac-bus-6c58` runs an old build
+- `/health` returns only `messages` and `status`; no locks, runs or A2A.
+- No Run Command plugin on the VM, and the one Run Command IAM policy covers a
+  different instance, so the OCI API cannot update it.
+- Needs one of: its SSH login key (`IAC_BUS_PROD_KEY` / `KSG_DEV_VM_KEY`; the
+  OCI API PEM is not a login key), or an OCI Run Command IAM policy for this
+  instance (plus the agent plugin enabled).
+- Then run `scripts/deploy-prod-vm.sh` (host `129.153.192.75`).
 
-### B-002: DNS for public edge
-- `iac-bus.knowshowgo.com` NXDOMAIN as of 2026-08-26 — create A → `129.153.192.75`.
-- Health today: `http://129.153.192.75:8101/health`.
+### B-002: `iac-bus.knowshowgo.com` does not exist
+- No DNS record (NXDOMAIN at last check). Owner step: A record
+  `iac-bus.knowshowgo.com` -> `129.153.192.75`, TTL 300.
+- TLS (Caddy) and NSG 80/443 on `iac-bus-6c58` follow the checklist in
+  `docs/OCI-LIVE.md`; both depend on B-001 access.
+- Until then use `http://129.153.192.75:8101/health` or the sslip.io dev edge.
 
-### B-003: Deploy SSH from this environment
-- Instance `iac-bus-6c58` is RUNNING; SSH with API PEM fails (expected).
-- Inject `IAC_BUS_PROD_KEY` (or `KSG_DEV_VM_KEY`) to enable `scripts/deploy-prod-vm.sh`.
+### B-003: GitHub Actions are manual-only
+- The Actions budget is spent; workflows (`dev-deploy.yml`, `prod-deploy.yml`,
+  `oci-provision-dev-vm.yml`) run only on manual dispatch (#27).
+- Nothing deploys on push. Deploy with scripts, or the OCI API
+  (`scripts/oci_launch_bus_vm.py`), until the budget is restored.
+- Run `pytest -q` and smoke locally; CI will not do it for you.
 
+## Next Tasks
 
-## Next Tasks (ready when blocker clears)
+### T-001: Unblock and update production (needs B-001)
+- Deploy current `dev`/`master` to `iac-bus-6c58`; check `/health` shows the
+  ops fields and `/metrics` answers.
+- Acceptance: prod smoke passes (`scripts/bus_smoke.sh` against it).
 
-### T-001: Provision new OCI dev VM (high priority)
-- Command:
-  - `OCI_RUN_DEPLOY_AFTER_CREATE=true python3 scripts/provision-oci-dev-vm.py`
-- Expected output:
-  - new VM public IP
-  - OCI instance ID
-  - optional automatic deploy execution
-- Acceptance:
-  - VM created and reachable over SSH
+### T-002: DNS + TLS cutover (needs B-001, B-002)
+- Follow "DNS cutover checklist" in `docs/OCI-LIVE.md`.
+- Acceptance: `curl -fsS https://iac-bus.knowshowgo.com/health` is ok.
 
-### T-002: Deploy dev service to the new VM
-- Command:
-  - `./scripts/deploy-dev-vm.sh`
-- Acceptance:
-  - `iac-bus-dev.service` active
-  - hot reload runner active
+### T-003: Promote `dev` to `master`
+- Open the PR, run gates locally, tag `vX.Y.Z` per `AGENTS.md`.
+- Deploy only after approval; update `VERSION` and `docs/PROGRESS.md`.
 
-### T-003: Verify runtime and logs
-- Commands:
-  - `curl http://<VM_IP>:8091/health`
-  - `ssh ... "sudo systemctl status iac-bus-dev.service"`
-  - `ssh ... "sudo journalctl -u iac-bus-dev.service -n 100 --no-pager"`
-- Acceptance:
-  - health endpoint returns `status=ok`
-  - debug log lines visible
+### T-004: Orchestration jobs into the SQLite store (L5)
+- Job state is still in memory; locks, runs, messages and A2A tasks persist.
+- Acceptance: jobs survive a restart; tests cover it.
 
-### T-004: Verify GitHub Actions autonomous flows
-- Workflows:
-  - `.github/workflows/dev-deploy.yml`
-  - `.github/workflows/oci-provision-dev-vm.yml`
-- Acceptance:
-  - test job passes
-  - deploy/provision jobs execute successfully with secrets
+### T-005: Streamable HTTP MCP on the bus (ID6 remainder)
+- Add `POST /mcp` so agents need no local stdio adapter.
+- Acceptance: a Claude session connects by URL and locks a path.
 
-### T-005: Implement `wait_seconds` long-poll behavior
-- Target:
-  - `GET /bus/messages` supports long-poll timeout behavior
-- Tests:
-  - add integration tests for timeout and early-return on new message
-- Acceptance:
-  - tests pass and behavior documented
+### T-006: Registry principals and shared-lock schema (L2 / L4 gaps)
+- Add principals to the agent registry (runs, grants already exist).
+- Fix `resource_locks.resource_key UNIQUE` in `docs/sql/ACP_V2_SCHEMA.sql` so
+  several shared holders fit.
 
-### T-006: Start SQL-backed message ledger implementation (ACP v2)
-- Begin from:
-  - `docs/sql/ACP_V2_SCHEMA.sql`
-  - `docs/ACP_PROTOCOL_V2.md`
-- Scope:
-  - persist bus messages and agent identity references
-- Acceptance:
-  - initial persistence path behind feature flag or adapter layer
+### T-007: L3 tasks, dependency invalidation, provenance (not started)
 
-## Operational Notes for New Agent
-- First read `prompts/REPO_AGENT_TAKEOVER.prompt.md`.
-- Then read this file and execute top-down.
-- If blocker persists, do not proceed with fake VM provisioning status.
+### T-008: Postgres store, DLQ and event ledger (L5)
+- Later; not needed until SQLite limits are hit.
+
+## Notes
+- Never print secret values; secret names live in `AGENTS.md`.
+- Update `docs/PROGRESS.md` whenever a ladder rung or deploy fact changes.
