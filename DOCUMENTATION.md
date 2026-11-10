@@ -127,14 +127,17 @@ Fetch messages.
 
 Query parameters:
 - `channel` (string, optional) - filter by channel
-- `since_id` (string, optional) - return messages after this ID
+- `since_id` (string, optional) - page forward from this ID: the oldest
+  `limit` messages after it (see Behavior notes)
 - `limit` (int, optional, default: `50`, max: `200`)
 - `include_queue` (bool, optional, default: `false`)
 - `wait_seconds` (number, optional, default: `0`, capped by `BUS_WAIT_SECONDS_MAX`)
   - long-poll: block until matching messages appear or timeout
 
 Response:
-- `200 OK` with `{"messages":[...]}`.
+- `200 OK` with `{"messages":[...], "has_more": bool}`, plus `"cursor_lost": bool`
+  when `since_id` was given. `has_more: true` means more messages wait after
+  this page: read again from the last id.
 
 Example:
 ```bash
@@ -424,8 +427,15 @@ locks are released (`lock.released` events). Returns `locks_released`.
 - Retention is enforced by time (`BUS_RETENTION_SECONDS`) and size
   (`BUS_MAX_MESSAGES`).
 - `limit` is capped at `200`.
-- `since_id` returns messages strictly after the matching ID if found; if the
-  ID is not present, all messages for the query are returned.
+- Without `since_id`, the newest `limit` messages are returned.
+- With `since_id`, the OLDEST `limit` messages strictly after it are returned,
+  with `has_more`, so a reader that fell behind pages forward and misses
+  nothing still retained. (Before 0.3.0 this returned the newest page after
+  the cursor and silently dropped everything in between.)
+- A `since_id` that is not in the filtered view (pruned by retention, or from
+  another channel) returns the oldest retained page with `cursor_lost: true`,
+  and a long-poll answers it at once. Messages between that cursor and the
+  oldest retained one are gone; `cursor_lost` is how a reader learns that.
 - `wait_seconds` long-polls until matching messages appear or the timeout
   elapses (capped by `BUS_WAIT_SECONDS_MAX`).
 - Structured request logs include `request_id`, `method`, `path`, `status`, and

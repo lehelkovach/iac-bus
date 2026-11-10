@@ -64,6 +64,21 @@ def _release(message: Dict[str, Any]) -> None:
     message["lease_id"] = ""
 
 
+def _page(messages: List[Dict[str, Any]], has_more: bool, cursor_lost: bool) -> Dict[str, Any]:
+    """Cursor rules for GET /bus/messages, shared by both stores.
+
+    - No since_id: the newest `limit` messages (a reader's first look).
+    - since_id found: the OLDEST `limit` messages after it, and has_more when
+      more remain, so a reader that fell behind pages forward and loses
+      nothing. (Before 0.3.0 this returned the newest page after the cursor,
+      silently dropping everything between the cursor and that page.)
+    - since_id not found (pruned by retention, or another channel's id): the
+      oldest retained page with cursor_lost true, never a silent replay or a
+      silent jump to the tail.
+    """
+    return {"messages": messages, "has_more": has_more, "cursor_lost": cursor_lost}
+
+
 class MemoryStore:
     """In-memory backend. Operates on the list/dict handed in so callers
     (and tests) that hold a reference to them keep seeing live state."""
@@ -108,19 +123,25 @@ class MemoryStore:
     def list_messages(
         self, channel: str, since_id: str, include_queue: bool, limit: int
     ) -> List[Dict[str, Any]]:
+        return self.page_messages(channel, since_id, include_queue, limit)["messages"]
+
+    def page_messages(
+        self, channel: str, since_id: str, include_queue: bool, limit: int
+    ) -> Dict[str, Any]:
+        """One page of a channel; see _page() for the cursor rules."""
         with self._lock:
             msgs = list(self.messages)
         if channel:
             msgs = [m for m in msgs if m["channel"] == channel]
         if not include_queue:
             msgs = [m for m in msgs if not m.get("queue")]
-        if since_id:
-            try:
-                idx = next(i for i, m in enumerate(msgs) if m["id"] == since_id)
-                msgs = msgs[idx + 1:]
-            except StopIteration:
-                pass
-        return msgs[-limit:]
+        limit = max(int(limit), 0)
+        if not since_id:
+            return _page(msgs[-limit:] if limit else [], False, False)
+        # The cursor only counts when it is itself part of the filtered view.
+        idx = next((i for i, m in enumerate(msgs) if m["id"] == since_id), None)
+        rest = msgs if idx is None else msgs[idx + 1:]
+        return _page(rest[:limit], len(rest) > limit, idx is None)
 
     def claim_queue(
         self, queue: str, worker: str, lease_seconds: float, now: float
@@ -443,6 +464,12 @@ class SqliteStore:
     def list_messages(
         self, channel: str, since_id: str, include_queue: bool, limit: int
     ) -> List[Dict[str, Any]]:
+        return self.page_messages(channel, since_id, include_queue, limit)["messages"]
+
+    def page_messages(
+        self, channel: str, since_id: str, include_queue: bool, limit: int
+    ) -> Dict[str, Any]:
+        """One page of a channel; same cursor rules as MemoryStore (see _page())."""
         where = ["1=1"]
         params: List[Any] = []
         if channel:
@@ -451,22 +478,29 @@ class SqliteStore:
         if not include_queue:
             where.append("queue=''")
         clause = " AND ".join(where)
+        limit = max(int(limit), 0)
         with self._lock:
-            if since_id:
-                # Same rule as the in-memory list: the anchor only applies when
-                # it is itself part of the filtered view.
-                row = self._conn.execute(
-                    f"SELECT seq FROM messages WHERE {clause} AND id=?",
-                    params + [since_id],
-                ).fetchone()
-                if row:
-                    clause += " AND seq > ?"
-                    params.append(row["seq"])
+            if not since_id:
+                rows = self._conn.execute(
+                    f"SELECT * FROM messages WHERE {clause} ORDER BY seq DESC LIMIT ?",
+                    params + [limit],
+                ).fetchall()
+                return _page([self._row_to_message(r) for r in reversed(rows)], False, False)
+            # The cursor only counts when it is itself part of the filtered view.
+            row = self._conn.execute(
+                f"SELECT seq FROM messages WHERE {clause} AND id=?",
+                params + [since_id],
+            ).fetchone()
+            if row:
+                clause += " AND seq > ?"
+                params.append(row["seq"])
+            # Oldest first, one extra row to learn whether more remain.
             rows = self._conn.execute(
-                f"SELECT * FROM messages WHERE {clause} ORDER BY seq DESC LIMIT ?",
-                params + [max(limit, 0)],
+                f"SELECT * FROM messages WHERE {clause} ORDER BY seq ASC LIMIT ?",
+                params + [limit + 1],
             ).fetchall()
-        return [self._row_to_message(r) for r in reversed(rows)]
+        msgs = [self._row_to_message(r) for r in rows]
+        return _page(msgs[:limit], len(msgs) > limit, row is None)
 
     def claim_queue(
         self, queue: str, worker: str, lease_seconds: float, now: float

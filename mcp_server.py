@@ -851,12 +851,19 @@ class BusTools:
         if msgs:
             with self._mutex:
                 self._cursors[channel] = msgs[-1]["id"]
-        return {
+        out = {
             "channel": channel,
             "messages": [_compact_message(m) for m in msgs],
             "count": len(msgs),
             "next_since_id": msgs[-1]["id"] if msgs else cursor,
+            # More messages wait after this page: call read_messages again.
+            "has_more": bool(data.get("has_more")),
         }
+        if data.get("cursor_lost"):
+            # The cursor was pruned before this session read past it; some
+            # messages in between are gone. Say so instead of hiding it.
+            out["cursor_lost"] = True
+        return out
 
     # ------------------------------------------------- decisions / status
 
@@ -1065,7 +1072,9 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     ),
     "read_messages": (
         "Read messages on a bus channel. Without since_id it continues after the last message this "
-        "session read on that channel. wait_seconds (max 30) long-polls for new messages."
+        "session read on that channel. wait_seconds (max 30) long-polls for new messages. "
+        "has_more true means more messages wait: read again. cursor_lost true means some messages "
+        "expired before you read them."
     ),
     "request_decision": (
         "Ask a supervisor or human to decide before a risky or irreversible step: deleting files, "

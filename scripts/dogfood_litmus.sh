@@ -73,19 +73,20 @@ step=(inner.get("step") if isinstance(inner, dict) else None) or (msg.get("step"
 print((step or {}).get("id",""))')"
 
   # More reliable parse
-  read -r mid lease sid < <(printf '%s' "${claim}" | python3 - <<'PY'
+  # The program goes in -c, not a heredoc: `python3 - <<PY` makes the heredoc
+  # stdin, so the piped claim response was never read (JSONDecodeError).
+  # /bus/queues/claim answers {"message": <leased message>}; the step is in
+  # that message's own "message" body.
+  read -r mid lease sid < <(printf '%s' "${claim}" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-# Flask returns the message object at top level from claim endpoint — check server
-# tests expect response body is the leased message dict with id/lease_id/message fields
-mid=d.get("id","")
-lease=d.get("lease_id","")
-body=d.get("message")
-step={}
-if isinstance(body, dict):
-    step=body.get("step") or {}
+leased=d.get("message", d) if isinstance(d, dict) else {}
+mid=leased.get("id","")
+lease=leased.get("lease_id","")
+body=leased.get("message")
+step=(body.get("step") if isinstance(body, dict) else None) or {}
 print(mid, lease, step.get("id",""))
-PY
+'
 )
 
   if [[ "${sid}" != "${expect_step}" ]]; then

@@ -591,11 +591,15 @@ _store.locks.on_event = _publish_lock_event
 
 
 def _filter_messages(channel, since_id, limit, include_queue):
+    return _page_messages(channel, since_id, limit, include_queue)["messages"]
+
+
+def _page_messages(channel, since_id, limit, include_queue):
     # Expire stale locks first so readers of the `locks` channel see
     # lock.expired events without anyone touching the lock endpoints.
     _store.locks.sweep()
     _bus_prune()
-    return _store.list_messages(channel, since_id, include_queue, limit)
+    return _store.page_messages(channel, since_id, include_queue, limit)
 
 
 def _claim_queue_message(queue, worker, lease_seconds):
@@ -713,18 +717,20 @@ def bus_get_messages():
 
     deadline = time.time() + wait_seconds if wait_seconds > 0 else None
     while True:
-        msgs = _filter_messages(channel, since_id, limit, include_queue)
-        if msgs or deadline is None:
+        page = _page_messages(channel, since_id, limit, include_queue)
+        # A lost cursor is news in itself: answer at once, do not wait.
+        if page["messages"] or page["cursor_lost"] or deadline is None:
             break
         remaining = deadline - time.time()
         if remaining <= 0:
             break
         _bus_new_message.clear()
         # Re-check after clear to avoid missing a notify that raced with clear.
-        msgs = _filter_messages(channel, since_id, limit, include_queue)
-        if msgs:
+        page = _page_messages(channel, since_id, limit, include_queue)
+        if page["messages"] or page["cursor_lost"]:
             break
         _bus_new_message.wait(timeout=min(remaining, 0.25))
+    msgs = page["messages"]
 
     _metric_inc("messages_polled")
     _metric_observe("poll_latency_ms", (time.time() - started) * 1000)
@@ -737,7 +743,10 @@ def bus_get_messages():
         wait_seconds,
         len(msgs),
     )
-    return jsonify({"messages": msgs})
+    body = {"messages": msgs, "has_more": page["has_more"]}
+    if since_id:
+        body["cursor_lost"] = page["cursor_lost"]
+    return jsonify(body)
 
 
 @app.route("/bus/queues/claim", methods=["POST"])

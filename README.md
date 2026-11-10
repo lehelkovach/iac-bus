@@ -147,7 +147,9 @@ curl "http://<BUS_IP>:8091/bus/messages?channel=ops" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
 ```
 
-Use `since_id` to avoid re-reading older messages:
+Use `since_id` to avoid re-reading older messages. It pages forward: keep
+reading from the last id while the response says `has_more: true`, and treat
+`cursor_lost: true` as "some messages expired before I read them":
 ```bash
 curl "http://<BUS_IP>:8091/bus/messages?channel=ops&since_id=<LAST_ID>" \
   -H "Authorization: Bearer $BUS_API_TOKEN"
